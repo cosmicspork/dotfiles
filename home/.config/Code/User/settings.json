@@ -1,0 +1,17 @@
+{
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "workbench.startupEditor": "none",
+  "workbench.colorTheme": "Dracula Theme",
+  "workbench.iconTheme": "vscode-icons",
+  "remote.SSH.connectTimeout": 1800,
+  "git.confirmSync": false,
+  "laravel-pint.enable": true,
+  "git.autofetch": true,
+  "editor.minimap.enabled": false,
+  "terminal.integrated.initialHint": false,
+  "[markdown]": {
+    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
+  }
+}

@@ -1,0 +1,5 @@
+command_timeout = 150
+format = """
+$directory$git_branch$git_status
+$character
+"""

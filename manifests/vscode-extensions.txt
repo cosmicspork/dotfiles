@@ -1,0 +1,8 @@
+davidanson.vscode-markdownlint@0.61.1
+dracula-theme.theme-dracula@2.25.1
+editorconfig.editorconfig@0.18.1
+esbenp.prettier-vscode@12.3.0
+mikestead.dotenv@1.0.1
+redhat.vscode-xml@0.29.0
+redhat.vscode-yaml@1.19.1
+vscode-icons-team.vscode-icons@12.17.0
