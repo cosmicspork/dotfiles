@@ -162,9 +162,8 @@ gh_release() {
 
   local tmp
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' RETURN
 
-  curl -fsSL "$url" -o "$tmp/asset"
+  curl -fsSL "$url" -o "$tmp/asset" || { rm -rf "$tmp"; return 1; }
 
   case "$url" in
     *.tar.gz) tar -xzf "$tmp/asset" -C "$tmp" ;;
@@ -174,6 +173,7 @@ gh_release() {
 
   find "$tmp" -name "$binary" -type f | head -1 \
     | xargs -I{} install -m755 {} "$TARGET_HOME/.local/bin/$binary"
+  rm -rf "$tmp"
   echo "  ✓ $binary"
 }
 
