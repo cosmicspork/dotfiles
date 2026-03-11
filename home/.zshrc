@@ -15,18 +15,20 @@ if [ -f "$HOME/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh" ]; then
   source "$HOME/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh"
 fi
 
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+
 # Starship prompt
 if command -v starship >/dev/null 2>&1; then
   eval "$(starship init zsh)"
 fi
 
-export SUDO_EDITOR="hx"
-export EDITOR="hx"
-
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *) export PATH="$HOME/.local/bin:$PATH" ;;
-esac
+if command -v hx >/dev/null 2>&1; then
+  export SUDO_EDITOR="hx"
+  export EDITOR="hx"
+fi
 
 case ":$PATH:" in
   *":$HOME/.npm-global/bin:"*) ;;
