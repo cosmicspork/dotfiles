@@ -10,6 +10,7 @@
   "laravel-pint.enable": true,
   "git.autofetch": true,
   "editor.minimap.enabled": false,
+  "terminal.integrated.defaultProfile.linux": "zsh",
   "terminal.integrated.initialHint": false,
   "[markdown]": {
     "editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
