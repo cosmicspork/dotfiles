@@ -127,6 +127,9 @@ map_pkg() {
     tar)             echo tar ;;
     xz)              echo xz-utils ;;
     direnv)          echo direnv ;;
+    atuin)           echo atuin ;;
+    zoxide)          echo zoxide ;;
+    ug)              echo ugrep ;;
     *) echo "" ;;
   esac
 }
@@ -225,6 +228,23 @@ install_starship_fallback() {
 
   run mkdir -p "$TARGET_HOME/.local/bin"
   run sh -c "$(curl -fsSL https://starship.rs/install.sh)" -- -y -b "$TARGET_HOME/.local/bin" || true
+}
+
+install_atuin_fallback() {
+  if have atuin; then
+    return 0
+  fi
+  if ! have curl; then
+    echo "Skipping atuin fallback: curl missing"
+    return 0
+  fi
+
+  run_as_target_user bash -c "$(curl -fsSL https://setup.atuin.sh)" || echo "Warning: failed to install atuin"
+
+  if [[ -x "$TARGET_HOME/.atuin/bin/atuin" ]] && [[ ! -e "$TARGET_HOME/.local/bin/atuin" ]]; then
+    run mkdir -p "$TARGET_HOME/.local/bin"
+    run ln -sf "$TARGET_HOME/.atuin/bin/atuin" "$TARGET_HOME/.local/bin/atuin"
+  fi
 }
 
 install_or_update_git_repo() {
@@ -341,7 +361,7 @@ set_default_shell_to_zsh() {
 install_packages() {
   require_apt
   pm_update
-  local tools=(zsh starship eza rg fzf fd bat jq delta git curl rsync ca-certificates tar xz direnv)
+  local tools=(zsh starship eza rg fzf fd bat jq delta git curl rsync ca-certificates tar xz direnv atuin zoxide ug)
   local pkgs=()
   local seen=":"
   local mapped
@@ -364,9 +384,149 @@ install_packages() {
 
   ensure_fd_shim
   install_starship_fallback
+  install_atuin_fallback
   install_oh_my_zsh
   install_zsh_plugins
   set_default_shell_to_zsh
+}
+
+install_gh() {
+  if have gh; then
+    return 0
+  fi
+  if ! have curl || ! have jq; then
+    echo "Skipping gh install: curl or jq missing"
+    return 0
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) echo "Skipping gh install: unsupported arch $(uname -m)"; return 0 ;;
+  esac
+
+  local version
+  version="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
+    | jq -r '.tag_name | ltrimstr("v")' 2>/dev/null || true)"
+  if [[ -z "$version" ]]; then
+    echo "Warning: could not determine latest gh version; skipping"
+    return 0
+  fi
+
+  local tmp_deb
+  tmp_deb="$(mktemp /tmp/gh_XXXXXX.deb)"
+  if curl -fsSL -o "$tmp_deb" \
+    "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${arch}.deb"; then
+    run "${SUDO[@]}" dpkg -i "$tmp_deb" || true
+  else
+    echo "Warning: failed to download gh v${version}"
+  fi
+  rm -f "$tmp_deb"
+}
+
+install_glab() {
+  if have glab; then
+    return 0
+  fi
+  if ! have curl || ! have jq; then
+    echo "Skipping glab install: curl or jq missing"
+    return 0
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) echo "Skipping glab install: unsupported arch $(uname -m)"; return 0 ;;
+  esac
+
+  local version
+  version="$(curl -fsSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases" \
+    | jq -r '.[0].tag_name | ltrimstr("v")' 2>/dev/null || true)"
+  if [[ -z "$version" ]]; then
+    echo "Warning: could not determine latest glab version; skipping"
+    return 0
+  fi
+
+  local tmp_deb
+  tmp_deb="$(mktemp /tmp/glab_XXXXXX.deb)"
+  if curl -fsSL -o "$tmp_deb" \
+    "https://gitlab.com/gitlab-org/cli/-/releases/v${version}/downloads/glab_${version}_linux_${arch}.deb"; then
+    run "${SUDO[@]}" dpkg -i "$tmp_deb" || true
+  else
+    echo "Warning: failed to download glab v${version}"
+  fi
+  rm -f "$tmp_deb"
+}
+
+install_acli() {
+  if have acli; then
+    return 0
+  fi
+  if ! have curl; then
+    echo "Skipping acli install: curl missing"
+    return 0
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) echo "Skipping acli install: unsupported arch $(uname -m)"; return 0 ;;
+  esac
+
+  run mkdir -p "$TARGET_HOME/.local/bin"
+  if curl -fsSL -o "$TARGET_HOME/.local/bin/acli" \
+    "https://acli.atlassian.com/linux/latest/acli_linux_${arch}/acli"; then
+    run chmod +x "$TARGET_HOME/.local/bin/acli"
+  else
+    echo "Warning: failed to download Atlassian CLI"
+    rm -f "$TARGET_HOME/.local/bin/acli"
+  fi
+}
+
+install_zellij() {
+  if have zellij; then
+    return 0
+  fi
+  if ! have curl || ! have tar; then
+    echo "Skipping zellij install: curl or tar missing"
+    return 0
+  fi
+
+  local arch target
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) target="x86_64-unknown-linux-musl" ;;
+    aarch64|arm64) target="aarch64-unknown-linux-musl" ;;
+    *) echo "Skipping zellij install: unsupported arch $arch"; return 0 ;;
+  esac
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d /tmp/zellij_XXXXXX)"
+  if curl -fsSL -o "$tmp_dir/zellij.tar.gz" \
+    "https://github.com/zellij-org/zellij/releases/latest/download/zellij-${target}.tar.gz" \
+    && tar -xzf "$tmp_dir/zellij.tar.gz" -C "$tmp_dir"; then
+    run mkdir -p "$TARGET_HOME/.local/bin"
+    run install -m 0755 "$tmp_dir/zellij" "$TARGET_HOME/.local/bin/zellij"
+  else
+    echo "Warning: failed to install zellij"
+  fi
+  rm -rf "$tmp_dir"
+}
+
+install_uv() {
+  if have uv; then
+    return 0
+  fi
+  if ! have curl; then
+    echo "Skipping uv install: curl missing"
+    return 0
+  fi
+
+  run_as_target_user bash -c "$(curl -LsSf https://astral.sh/uv/install.sh)" || \
+    echo "Warning: failed to install uv"
 }
 
 ensure_node_and_npm() {
@@ -446,6 +606,11 @@ sync_rootfs() {
 main() {
   install_packages
   install_gh_tools
+  install_gh
+  install_glab
+  install_acli
+  install_zellij
+  install_uv
   ensure_node_and_npm
   configure_npm_and_ai_tools
   sync_rootfs

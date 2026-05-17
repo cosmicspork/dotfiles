@@ -1,0 +1,21 @@
+// Detach instead of killing the session when the terminal disconnects.
+// Critical for Coder workspaces: closing the browser tab or losing the
+// SSH/web-terminal connection leaves the claude-code session running.
+on_force_close "detach"
+
+// Persist sessions across zellij server restarts (e.g. workspace rebuilds
+// that preserve the home volume) so `zellij attach` can resume claude-code.
+session_serialization true
+serialize_pane_viewport true
+
+default_shell "zsh"
+
+// Reclaim vertical space for claude-code's TUI.
+pane_frames false
+default_layout "compact"
+
+// Remote terminals often have flaky scrollback; let the OS clipboard handle copy.
+copy_on_select false
+
+// Reduce noise from the status bar.
+simplified_ui true

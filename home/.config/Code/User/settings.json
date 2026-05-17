@@ -7,7 +7,6 @@
   "workbench.iconTheme": "vscode-icons",
   "remote.SSH.connectTimeout": 1800,
   "git.confirmSync": false,
-  "laravel-pint.enable": true,
   "git.autofetch": true,
   "editor.minimap.enabled": false,
   "terminal.integrated.defaultProfile.linux": "zsh",
