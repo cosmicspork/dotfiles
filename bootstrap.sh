@@ -516,6 +516,39 @@ install_zellij() {
   rm -rf "$tmp_dir"
 }
 
+install_kubectl() {
+  if have kubectl; then
+    return 0
+  fi
+  if ! have curl; then
+    echo "Skipping kubectl install: curl missing"
+    return 0
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) echo "Skipping kubectl install: unsupported arch $(uname -m)"; return 0 ;;
+  esac
+
+  local version
+  version="$(curl -fsSL https://dl.k8s.io/release/stable.txt 2>/dev/null || true)"
+  if [[ -z "$version" ]]; then
+    echo "Warning: could not determine latest kubectl version; skipping"
+    return 0
+  fi
+
+  run mkdir -p "$TARGET_HOME/.local/bin"
+  if curl -fsSL -o "$TARGET_HOME/.local/bin/kubectl" \
+    "https://dl.k8s.io/release/${version}/bin/linux/${arch}/kubectl"; then
+    run chmod +x "$TARGET_HOME/.local/bin/kubectl"
+  else
+    echo "Warning: failed to download kubectl ${version}"
+    rm -f "$TARGET_HOME/.local/bin/kubectl"
+  fi
+}
+
 install_uv() {
   if have uv; then
     return 0
@@ -527,6 +560,20 @@ install_uv() {
 
   run_as_target_user bash -c "$(curl -LsSf https://astral.sh/uv/install.sh)" || \
     echo "Warning: failed to install uv"
+}
+
+install_bun() {
+  if have bun; then
+    return 0
+  fi
+  if ! have curl; then
+    echo "Skipping bun install: curl missing"
+    return 0
+  fi
+
+  pm_install unzip  # required by the bun installer on Linux
+  run_as_target_user bash -c "$(curl -LsSf https://bun.sh/install)" || \
+    echo "Warning: failed to install bun"
 }
 
 ensure_node_and_npm() {
@@ -610,7 +657,9 @@ main() {
   install_glab
   install_acli
   install_zellij
+  install_kubectl
   install_uv
+  install_bun
   ensure_node_and_npm
   configure_npm_and_ai_tools
   sync_rootfs

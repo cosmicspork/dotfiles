@@ -1,0 +1,4 @@
+# Composer global packages — manually required (transitive deps not listed).
+# Install with: composer global require $(grep -v '^#' < manifests/composer-globals.txt | xargs)
+laravel/installer
+laravel/cloud-cli

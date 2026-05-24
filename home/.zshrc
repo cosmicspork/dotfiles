@@ -26,6 +26,11 @@ case ":$PATH:" in
 esac
 
 case ":$PATH:" in
+  *":$HOME/.bun/bin:"*) ;;
+  *) export PATH="$HOME/.bun/bin:$PATH" ;;
+esac
+
+case ":$PATH:" in
   *":$HOME/.config/composer/vendor/bin:"*) ;;
   *) export PATH="$HOME/.config/composer/vendor/bin:$PATH" ;;
 esac
