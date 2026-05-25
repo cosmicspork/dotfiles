@@ -622,6 +622,12 @@ configure_npm_and_ai_tools() {
     fi
   fi
 
+  if ! capture_as_target_user npm list -g --depth=0 intelephense >/dev/null 2>&1; then
+    if ! run_as_target_user npm install -g intelephense; then
+      echo "Warning: failed to install intelephense globally"
+    fi
+  fi
+
   # Claude Code — official installer
   if ! have claude; then
     curl -fsSL https://claude.ai/install.sh | bash || \
