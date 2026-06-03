@@ -29,6 +29,8 @@ brew "gh"
 brew "git-delta"
 # Open-source GitLab command-line tool
 brew "glab"
+# Open source programming language to build simple/reliable/efficient software
+brew "go"
 # Post-modern modal text editor
 brew "helix"
 # Kubernetes package manager
