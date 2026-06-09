@@ -1,0 +1,7 @@
+# macOS-only Homebrew casks. Shared formulae live in manifests/Brewfile.
+# OpenAI's coding agent that runs in your terminal
+cask "codex"
+# Plain-text editor for web pages, program source codes and more
+cask "coteditor"
+# Monaspace Nerd Font (tracked for Bazzite in manifests/bazzite/fonts.txt)
+cask "font-monaspice-nerd-font"

@@ -1,3 +1,6 @@
+# Shared Homebrew formulae — installed on every host with Homebrew (macOS and
+# Bazzite, which ships brew as the blessed path for CLI tools). Profile-specific
+# casks live in manifests/<profile>/Brewfile.
 tap "fluxcd/tap"
 # Simple, modern, secure file encryption
 brew "age"
@@ -29,8 +32,6 @@ brew "gh"
 brew "git-delta"
 # Open-source GitLab command-line tool
 brew "glab"
-# Open source programming language to build simple/reliable/efficient software
-brew "go"
 # Post-modern modal text editor
 brew "helix"
 # Kubernetes package manager
@@ -69,44 +70,3 @@ brew "zellij"
 brew "zoxide"
 # Flux CLI
 brew "fluxcd/tap/flux"
-# OpenAI's coding agent that runs in your terminal
-cask "codex"
-cask "font-monaspice-nerd-font"
-vscode "anthropic.claude-code"
-vscode "dracula-theme.theme-dracula"
-vscode "ms-azuretools.vscode-containers"
-vscode "ms-vscode-remote.remote-containers"
-vscode "ms-vscode-remote.remote-ssh"
-vscode "ms-vscode-remote.remote-ssh-edit"
-vscode "ms-vscode.remote-explorer"
-vscode "vscode-icons-team.vscode-icons"
-uv "beets", with: ["beets-audible"]
-uv "mnamer"
-flatpak "com.bitwarden.desktop"
-flatpak "com.calibre_ebook.calibre"
-flatpak "com.discordapp.Discord"
-flatpak "com.github.Matoking.protontricks"
-flatpak "com.github.tchx84.Flatseal"
-flatpak "com.github.zocker_160.SyncThingy"
-flatpak "com.protonvpn.www"
-flatpak "com.ranfdev.DistroShelf"
-flatpak "com.spotify.Client"
-flatpak "com.vysp3r.ProtonPlus"
-flatpak "io.github.flattool.Warehouse"
-flatpak "io.github.ungoogled_software.ungoogled_chromium"
-flatpak "io.podman_desktop.PodmanDesktop"
-flatpak "md.obsidian.Obsidian"
-flatpak "org.audacityteam.Audacity"
-flatpak "org.gnome.Snapshot"
-flatpak "org.kde.filelight"
-flatpak "org.kde.gwenview"
-flatpak "org.kde.haruna"
-flatpak "org.kde.kcalc"
-flatpak "org.kde.okular"
-flatpak "org.libreoffice.LibreOffice"
-flatpak "org.localsend.localsend_app"
-flatpak "org.mozilla.firefox"
-flatpak "org.nickvision.tubeconverter"
-flatpak "org.prismlauncher.PrismLauncher"
-flatpak "org.torproject.torbrowser-launcher"
-flatpak "org.videolan.VLC"

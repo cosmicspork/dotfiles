@@ -1,0 +1,3 @@
+# Nerd Fonts (ryanoasis/nerd-fonts release archive names). Shared with macOS,
+# where the same font installs via the font-monaspice-nerd-font Homebrew cask.
+Monaspace

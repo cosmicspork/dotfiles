@@ -1,0 +1,15 @@
+# Flatpak application IDs (flatpak install flathub <id>).
+com.bitwarden.desktop
+com.discordapp.Discord
+com.github.zocker_160.SyncThingy
+com.protonvpn.www
+com.ranfdev.DistroShelf
+com.spotify.Client
+io.github.ungoogled_software.ungoogled_chromium
+org.audacityteam.Audacity
+org.libreoffice.LibreOffice
+org.localsend.localsend_app
+org.nickvision.tubeconverter
+org.prismlauncher.PrismLauncher
+org.torproject.torbrowser-launcher
+org.videolan.VLC

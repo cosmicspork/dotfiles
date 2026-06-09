@@ -1,0 +1,14 @@
+inherits = "base16_terminal"
+"ui.background" = { bg = "none" }
+"ui.gutter" = { bg = "none" }
+"ui.linenr" = { bg = "none" }
+"ui.linenr.selected" = { bg = "none" }
+"ui.statusline" = { bg = "none" }
+"ui.statusline.inactive" = { bg = "none" }
+"ui.popup" = { bg = "none" }
+"ui.menu" = { bg = "none" }
+"ui.menu.selected" = { bg = "none" }
+"ui.help" = { bg = "none" }
+"ui.window" = { bg = "none" }
+"ui.selection" = { bg = "none", modifiers = ["reversed"] }
+"ui.selection.primary" = { bg = "none", modifiers = ["reversed"] }

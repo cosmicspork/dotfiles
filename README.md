@@ -1,55 +1,114 @@
 # dotfiles
 
-Personal dotfiles for Debian-based devcontainers. Run once:
+Profiled personal dotfiles. `devcontainer` is the default/base development target, with host overlays for macOS and Bazzite.
+
+Run once:
 
 ```bash
-./bootstrap.sh
+./install
 ```
 
-`home/` is rsynced into `$HOME`, then a batch of CLI tools and VS Code extensions are installed. Idempotent — safe to rerun.
+Override detection when needed:
 
-## Scope and limitations
+```bash
+./install --profile devcontainer
+./install --profile macos
+./install --profile bazzite
+./install --home-only --profile macos
+```
 
-- **Linux + Debian/apt only.** Bails on macOS or any non-`apt-get` distro.
-- **Debian 11 or 12+** assumed; older releases may lack packages used here.
-- **amd64 and arm64 only.** Other architectures skip the GitHub-release installers.
-- **Devcontainer-first.** Designed for Coder workspaces and local devcontainers.
-- **Network required.** Pulls from apt, GitHub/GitLab release APIs, and a few `curl | bash` installers.
-- **Changes login shell to zsh** for the invoking user.
+## Profiles
+
+- `devcontainer` — Debian/apt bootstrap plus devcontainer-focused home overlay. This remains the fallback/default profile.
+- `macos` — base home overlay plus macOS shell additions, the shared `manifests/Brewfile`, and macOS casks in `manifests/macos/Brewfile`.
+- `bazzite` — base home overlay plus Bazzite shell additions. Installs the shared `manifests/Brewfile` via Homebrew (preinstalled on Bazzite); the Flatpak, uv-tool, and font manifests are present but not yet wired.
+
+Profile detection:
+
+1. `--profile <name>` argument
+2. `DOTFILES_PROFILE=<name>` environment variable
+3. macOS (`Darwin`) => `macos`
+4. Bazzite `/etc/os-release` => `bazzite`
+5. fallback => `devcontainer`
 
 ## Layout
 
-- `bootstrap.sh` — installer (devcontainer + Debian host essentials)
-- `home/` — files rsynced into `$HOME`
-- `manifests/vscode-extensions.txt` — VS Code extensions installed by `bootstrap.sh`
-- `manifests/composer-globals.txt` — top-level Composer global requires
-- `Brewfile` — host-only extras (Homebrew formulas/casks/taps, Flatpaks, VS Code extensions, uv tools). Not used by `bootstrap.sh`; apply on personal machines with brew installed.
+```text
+install                         # entrypoint; delegates to bootstrap.sh
+bootstrap.sh                    # profile-aware installer
+home/base/                      # applied for every profile
+home/base/.zshrc.d/             # ordered shell fragments
+home/profiles/devcontainer/     # devcontainer overlay
+home/profiles/macos/            # macOS overlay
+home/profiles/bazzite/          # Bazzite overlay
+manifests/vscode-extensions.txt        # shared VS Code extensions (all profiles)
+manifests/composer-globals.txt         # Composer global package list (shared)
+manifests/Brewfile                     # shared Homebrew formulae (macOS + Bazzite)
+manifests/devcontainer/tools.txt       # devcontainer apt tool list
+manifests/macos/Brewfile               # macOS-only Homebrew casks
+manifests/bazzite/flatpaks.txt         # Bazzite Flatpak application IDs
+manifests/bazzite/fonts.txt            # Bazzite Nerd Fonts (shared with macOS cask)
+manifests/bazzite/packages.txt         # Bazzite native packages (placeholder)
+manifests/bazzite/uv-tools.txt         # Bazzite uv tools
+```
 
-## Host setup (personal machines)
+Home files are applied by copying `home/base/` first, then `home/profiles/<profile>/` over it.
+
+## Devcontainer setup
+
+`./install` installs Debian tooling, GitHub/GitLab CLIs, shell tools, npm global tools, and VS Code extensions (from the shared `manifests/vscode-extensions.txt`), then applies the base + devcontainer home overlays.
+
+Scope and limitations:
+
+- Debian/apt package bootstrap only for the `devcontainer` profile.
+- Debian 11 or 12+ assumed for package names.
+- amd64 and arm64 only for direct GitHub-release binary installers.
+- Network required for package managers and release downloads.
+- Changes login shell to zsh when possible.
+
+## macOS setup
 
 ```bash
-brew bundle install --file=Brewfile          # brew + flatpak + vscode + uv tools
+./install --profile macos
+```
+
+This applies base + macOS home overlays, installs the shared VS Code extensions via the `code` CLI, and runs both Homebrew bundles:
+
+```bash
+brew bundle install --file manifests/Brewfile
+brew bundle install --file manifests/macos/Brewfile
+```
+
+To apply only home files without package changes:
+
+```bash
+./install --profile macos --home-only
+```
+
+## Composer globals
+
+```bash
 composer global require $(grep -v '^#' < manifests/composer-globals.txt | xargs)
 ```
 
-The Brewfile is a snapshot — regenerate with `brew bundle dump --file=Brewfile --force --describe` after deliberate additions, and `brew bundle check --file=Brewfile` to see drift.
-
-### GnuPG
+## GnuPG on Bazzite/Linux desktops
 
 `~/.gnupg/common.conf`:
-```
+
+```text
 use-keyboxd
 ```
 
 `~/.gnupg/gpg-agent.conf`:
-```
+
+```text
 pinentry-program /usr/bin/pinentry-qt
 default-cache-ttl 34560000
 max-cache-ttl 34560000
 allow-preset-passphrase
 ```
 
-`~/.config/systemd/user/gpg-preset.service` preloads the signing key's passphrase from KWallet into gpg-agent's cache at session start, so Git operations never prompt for it. It pairs with `allow-preset-passphrase` and the long cache TTL above. Per-machine setup (one-time):
+`~/.config/systemd/user/gpg-preset.service` preloads the signing key's passphrase from KWallet into gpg-agent's cache at session start, so Git operations never prompt for it. It pairs with `allow-preset-passphrase` and the long cache TTL above. Per-machine setup:
 
 1. Store the passphrase in KWallet keyed by keygrip:
    ```bash

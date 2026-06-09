@@ -1,0 +1,20 @@
+# Tool names are mapped to apt packages by bootstrap.sh.
+zsh
+starship
+eza
+rg
+fzf
+fd
+bat
+jq
+delta
+git
+curl
+rsync
+ca-certificates
+tar
+xz
+direnv
+atuin
+zoxide
+ug

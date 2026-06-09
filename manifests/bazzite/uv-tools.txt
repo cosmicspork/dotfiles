@@ -1,0 +1,3 @@
+# uv tools (uv tool install). Format: <package> [--with <extra> ...]
+beets --with beets-audible
+mnamer

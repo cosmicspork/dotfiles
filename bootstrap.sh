@@ -2,23 +2,63 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOTFS_DIR="$HERE/home"
-VSCODE_EXTENSIONS_FILE="$HERE/manifests/vscode-extensions.txt"
+HOME_BASE_DIR="$HERE/home/base"
+PROFILE=""
+HOME_ONLY=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./bootstrap.sh
+Usage: ./install [--profile devcontainer|macos|bazzite] [--home-only]
 
-Debian 11/12+ bootstrap for devcontainer and personal machine environments.
+Applies base dotfiles plus one host profile. Defaults to devcontainer unless
+macOS or Bazzite is detected.
 USAGE
 }
 
-if [[ $# -gt 0 ]]; then
+detect_profile() {
+  case "$(uname -s)" in
+    Darwin) echo macos; return ;;
+  esac
+
+  if [[ -r /etc/os-release ]]; then
+    . /etc/os-release
+    if [[ "${ID:-}" == "bazzite" || "${VARIANT_ID:-}" == "bazzite" || "${PRETTY_NAME:-}" == *Bazzite* ]]; then
+      echo bazzite
+      return
+    fi
+  fi
+
+  echo devcontainer
+}
+
+while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    --profile)
+      [[ $# -ge 2 ]] || { echo "--profile requires a value"; usage; exit 1; }
+      PROFILE="$2"
+      shift 2
+      ;;
+    --profile=*)
+      PROFILE="${1#--profile=}"
+      shift
+      ;;
+    --home-only)
+      HOME_ONLY=1
+      shift
+      ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
   esac
-fi
+done
+
+PROFILE="${PROFILE:-${DOTFILES_PROFILE:-$(detect_profile)}}"
+case "$PROFILE" in
+  devcontainer|macos|bazzite) ;;
+  *) echo "Unknown profile: $PROFILE"; usage; exit 1 ;;
+esac
+
+HOME_PROFILE_DIR="$HERE/home/profiles/$PROFILE"
+VSCODE_EXTENSIONS_FILE="$HERE/manifests/vscode-extensions.txt"
 
 run() {
   printf '>'; printf ' %q' "$@"; echo
@@ -361,7 +401,18 @@ set_default_shell_to_zsh() {
 install_packages() {
   require_apt
   pm_update
-  local tools=(zsh starship eza rg fzf fd bat jq delta git curl rsync ca-certificates tar xz direnv atuin zoxide ug)
+  local tools=()
+  local tools_file="$HERE/manifests/devcontainer/tools.txt"
+  local t
+  if [[ -f "$tools_file" ]]; then
+    while IFS= read -r t || [[ -n "$t" ]]; do
+      t="${t%%#*}"
+      t="${t//[[:space:]]/}"
+      [[ -n "$t" ]] && tools+=("$t")
+    done < "$tools_file"
+  else
+    tools=(zsh starship eza rg fzf fd bat jq delta git curl rsync ca-certificates tar xz direnv atuin zoxide ug)
+  fi
   local pkgs=()
   local seen=":"
   local mapped
@@ -641,38 +692,81 @@ configure_npm_and_ai_tools() {
   fi
 }
 
-sync_rootfs() {
-  if [[ ! -d "$ROOTFS_DIR" ]]; then
-    echo "Missing home directory: $ROOTFS_DIR"
-    exit 1
+sync_home_dir() {
+  local source_dir="$1"
+  if [[ ! -d "$source_dir" ]]; then
+    return 0
   fi
 
   run mkdir -p "$TARGET_HOME"
 
   if have rsync; then
-    run rsync -a "$ROOTFS_DIR/" "$TARGET_HOME/"
+    run rsync -a "$source_dir/" "$TARGET_HOME/"
   else
-    run cp -R "$ROOTFS_DIR/." "$TARGET_HOME/"
+    run cp -R "$source_dir/." "$TARGET_HOME/"
   fi
 }
 
-main() {
-  install_packages
-  install_gh_tools
-  install_gh
-  install_glab
-  install_acli
-  install_zellij
-  install_kubectl
-  install_uv
-  install_bun
-  ensure_node_and_npm
-  configure_npm_and_ai_tools
-  sync_rootfs
-  sync_vscode_web_settings
-  install_vscode_extensions
+sync_rootfs() {
+  if [[ ! -d "$HOME_BASE_DIR" ]]; then
+    echo "Missing base home directory: $HOME_BASE_DIR"
+    exit 1
+  fi
 
-  echo "Bootstrap complete. Start a new shell session to load zsh/starship changes."
+  sync_home_dir "$HOME_BASE_DIR"
+  sync_home_dir "$HOME_PROFILE_DIR"
+}
+
+install_profile_packages() {
+  if [[ "$HOME_ONLY" -eq 1 ]]; then
+    return 0
+  fi
+
+  case "$PROFILE" in
+    devcontainer)
+      install_packages
+      install_gh_tools
+      install_gh
+      install_glab
+      install_acli
+      install_zellij
+      install_kubectl
+      install_uv
+      install_bun
+      ensure_node_and_npm
+      configure_npm_and_ai_tools
+      ;;
+    macos)
+      if have brew; then
+        [[ -f "$HERE/manifests/Brewfile" ]] && run brew bundle install --file "$HERE/manifests/Brewfile"
+        [[ -f "$HERE/manifests/macos/Brewfile" ]] && run brew bundle install --file "$HERE/manifests/macos/Brewfile"
+      else
+        echo "Skipping macOS packages: Homebrew not found"
+      fi
+      ;;
+    bazzite)
+      if have brew && [[ -f "$HERE/manifests/Brewfile" ]]; then
+        run brew bundle install --file "$HERE/manifests/Brewfile"
+      else
+        echo "Skipping Bazzite Homebrew formulae: Homebrew not found"
+      fi
+      ;;
+  esac
+}
+
+main() {
+  install_profile_packages
+  sync_rootfs
+
+  if [[ "$PROFILE" == "devcontainer" ]]; then
+    sync_vscode_web_settings
+  fi
+
+  if [[ "$HOME_ONLY" -eq 0 ]]; then
+    install_vscode_extensions
+  fi
+
+  echo "Dotfiles bootstrap complete for profile: $PROFILE. Start a new shell session to load zsh/starship changes."
 }
 
 main "$@"
