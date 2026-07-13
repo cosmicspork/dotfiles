@@ -2,6 +2,7 @@ for _path_dir in \
   "$HOME/.local/bin" \
   "$HOME/.npm-global/bin" \
   "$HOME/.bun/bin" \
+  "$HOME/.cargo/bin" \
   "$HOME/.config/composer/vendor/bin" \
   "$HOME/.composer/vendor/bin"
 do

@@ -44,6 +44,8 @@ brew "mpv"
 brew "ripgrep"
 # AI coding agent, built for the terminal
 brew "opencode"
+# Rust toolchain installer (manages cargo/rustc; keg-only)
+brew "rustup"
 # Intuitive find & replace CLI
 brew "sd"
 # Static analysis and lint tool, for (ba)sh scripts
