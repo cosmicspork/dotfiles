@@ -50,6 +50,7 @@ manifests/bazzite/flatpaks.txt         # Bazzite Flatpak application IDs
 manifests/bazzite/fonts.txt            # Bazzite Nerd Fonts (shared with macOS cask)
 manifests/bazzite/packages.txt         # Bazzite native packages (placeholder)
 manifests/bazzite/uv-tools.txt         # Bazzite uv tools
+tests/                                 # repo-level tests; not copied into $HOME
 ```
 
 Home files are applied by copying `home/base/` first, then `home/profiles/<profile>/` over it.
@@ -136,3 +137,78 @@ RemainAfterExit=true
 [Install]
 WantedBy=graphical-session.target
 ```
+
+## Local LLM inference on Bazzite (llama.cpp + Vulkan)
+
+Runs `llama-server` against the Radeon 890M iGPU via Vulkan/RADV, exposing an
+OpenAI-compatible endpoint at `http://127.0.0.1:8080/v1`. ROCm is deliberately
+not used: it cannot allocate from GTT on gfx1150, so large models OOM after the
+first request.
+
+Tracked files (bazzite profile):
+
+```text
+.local/bin/update-llama-cpp                    # source build + atomic release switch
+.config/systemd/user/llama-update.{service,timer}
+.config/systemd/user/llama-server.service
+.config/llama-server.env                       # model and flags
+tests/test-update.sh                           # repo-level; run manually
+```
+
+Build output lives in `~/.local/opt/llama.cpp/{releases,current}` and is not
+tracked — it is several hundred MB per release. The updater keeps the active
+release plus one approved fallback.
+
+Per-machine setup:
+
+1. Raise the GTT pool so the iGPU can address more than the kernel default of
+   half of RAM. Reboot required.
+   ```bash
+   sudo rpm-ostree kargs \
+     --append-if-missing=amdgpu.gttsize=65536 \
+     --append-if-missing=ttm.pages_limit=16777216
+   ```
+   `65536` MB = 64 GiB; `16777216` pages x 4 KiB = the same 64 GiB.
+   `ttm.pages_limit` is the binding constraint — setting only `gttsize` does
+   nothing. Size it to leave the OS comfortable headroom.
+2. Symlink the binaries onto `PATH`. They point at `current/`, so they follow
+   the atomic release switch without needing to be recreated.
+   ```bash
+   for b in llama-server llama-cli llama-bench; do
+     ln -sfn "$HOME/.local/opt/llama.cpp/current/build/bin/$b" "$HOME/.local/bin/$b"
+   done
+   ```
+3. Build the first release. Takes several minutes; needs AC power.
+   ```bash
+   systemctl --user start llama-update.service
+   journalctl --user -u llama-update.service -f
+   ```
+4. Pick a model in `~/.config/llama-server.env`, then enable both units:
+   ```bash
+   systemctl --user enable --now llama-update.timer llama-server.service
+   ```
+   First start downloads the model into `~/.cache/llama.cpp`, which can take a
+   while on a cold cache. Pre-fetch it before enabling the service if the
+   download would outrun the updater's health-check window.
+
+Notes:
+
+- `llama-server` binds to `127.0.0.1` because it has no authentication. Do not
+  move it to `0.0.0.0` on a portable machine.
+- `--jinja` in `llama-server.env` is required for OpenAI-style tool calling;
+  without it the server returns 500 on any request carrying a `tools` param.
+- The update timer fires daily but `LLAMA_MIN_INTERVAL=604800` in the service
+  holds rebuilds to weekly. The daily cadence exists because
+  `ConditionACPower=true` marks a battery-time run as handled, so `Persistent=`
+  would not replay a weekly schedule — the skip would silently cost a week.
+- The updater validates a candidate by building it, confirming it enumerates a
+  Vulkan device, then restarting `llama-server.service` and waiting on
+  `/health`. It only marks a release `.approved` after that passes, and rolls
+  back to the previous approved release otherwise. Without
+  `llama-server.service` installed, that server-side validation is skipped.
+- Run the tests after changing the updater:
+  ```bash
+  ./tests/test-update.sh
+  ```
+  They default to the tracked source. Override with
+  `SCRIPT=~/.local/bin/update-llama-cpp` to test an installed copy.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Check daily for a numbered llama.cpp release
+
+[Timer]
+# Fires daily, but llama-update.service enforces a 7-day minimum between builds
+# via LLAMA_MIN_INTERVAL. The frequent trigger exists so that a run skipped by
+# ConditionACPower is retried the next day: a failed condition still marks the
+# unit as handled, so Persistent= would not replay it on a weekly schedule.
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=llama-update.service
+
+[Install]
+WantedBy=timers.target
