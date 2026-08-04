@@ -183,7 +183,12 @@ Per-machine setup:
    systemctl --user start llama-update.service
    journalctl --user -u llama-update.service -f
    ```
-4. Pick a model in `~/.config/llama-server.env`, then enable both units:
+4. Generate the API key. It is host-only and never tracked; the unit refuses to
+   start without it rather than quietly serving unauthenticated.
+   ```bash
+   umask 077 && openssl rand -hex 32 > ~/.config/llama-server.key
+   ```
+5. Pick a model in `~/.config/llama-server.env`, then enable both units:
    ```bash
    systemctl --user enable --now llama-update.timer llama-server.service
    ```
@@ -193,8 +198,15 @@ Per-machine setup:
 
 Notes:
 
-- `llama-server` binds to `127.0.0.1` because it has no authentication. Do not
-  move it to `0.0.0.0` on a portable machine.
+- `llama-server` binds to `127.0.0.1`. Do not move it to `0.0.0.0` on a portable
+  machine.
+- `--cors-origins localhost` is not redundant with that bind. CORS defaults to
+  `*` with credentials enabled, which echoes back any `Origin`, so any page you
+  browse could drive the server from your own machine. It costs nothing here:
+  local process clients send no `Origin` and are not subject to CORS.
+- The API key is what actually protects the endpoint. CORS does not stop DNS
+  rebinding — the server performs no `Host` header validation — and it does not
+  stop other local processes. Any client, including omp, needs the key.
 - `--jinja` in `llama-server.env` is required for OpenAI-style tool calling;
   without it the server returns 500 on any request carrying a `tools` param.
 - The update timer fires daily but `LLAMA_MIN_INTERVAL=604800` in the service

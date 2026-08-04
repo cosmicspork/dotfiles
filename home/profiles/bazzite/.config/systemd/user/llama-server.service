@@ -4,6 +4,8 @@ Documentation=https://github.com/ggml-org/llama.cpp/tree/master/tools/server
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=%h/.local/opt/llama.cpp/current/build/bin/llama-server
+# Refuse to start unauthenticated rather than silently serving without a key.
+ConditionPathExists=%h/.config/llama-server.key
 # A model that cannot load fails instantly and forever; do not spin on it.
 StartLimitIntervalSec=300
 StartLimitBurst=3
@@ -13,8 +15,11 @@ Type=exec
 # Model and flags live here so they can be changed without touching the unit.
 EnvironmentFile=%h/.config/llama-server.env
 Environment=LLAMA_CACHE=%h/.cache/llama.cpp
+# --api-key-file lives here rather than in llama-server.env for two reasons: %h
+# expands in a unit but not in an EnvironmentFile, and keeping the key in its
+# own 0600 file means the tracked env file never carries a secret.
 # $LLAMA_SERVER_ARGS is deliberately unquoted: systemd word-splits a single $VAR.
-ExecStart=%h/.local/opt/llama.cpp/current/build/bin/llama-server $LLAMA_SERVER_ARGS
+ExecStart=%h/.local/opt/llama.cpp/current/build/bin/llama-server --api-key-file %h/.config/llama-server.key $LLAMA_SERVER_ARGS
 Restart=on-failure
 RestartSec=5s
 Nice=-5
