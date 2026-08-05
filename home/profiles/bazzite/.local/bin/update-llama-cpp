@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 022
+
+ROOT=${LLAMA_CPP_ROOT:-"$HOME/.local/opt/llama.cpp"}
+mkdir -p "$ROOT"
+ROOT=$(readlink -f "$ROOT")
+REPO_URL=${LLAMA_REPO_URL:-https://github.com/ggml-org/llama.cpp.git}
+BREW_BIN=${LLAMA_BREW_BIN:-/home/linuxbrew/.linuxbrew/bin/brew}
+SKIP_BREW=${LLAMA_SKIP_BREW:-0}
+RESTART_SERVER=${LLAMA_RESTART:-1}
+HEALTH_URL=${LLAMA_HEALTH_URL:-http://127.0.0.1:8080/health}
+HEALTH_ATTEMPTS=${LLAMA_HEALTH_ATTEMPTS:-120}
+BUILD_JOBS=${LLAMA_BUILD_JOBS:-$(nproc)}
+GIT_BIN=${LLAMA_GIT_BIN:-git}
+CMAKE_BIN=${LLAMA_CMAKE_BIN:-cmake}
+SYSTEMCTL_BIN=${LLAMA_SYSTEMCTL_BIN:-systemctl}
+CURL_BIN=${LLAMA_CURL_BIN:-curl}
+# Seconds that must elapse between builds; 0 (the default) disables the guard so
+# manual runs always proceed. The timer unit sets this to enforce its cadence.
+MIN_INTERVAL=${LLAMA_MIN_INTERVAL:-0}
+
+RELEASES="$ROOT/releases"
+CURRENT="$ROOT/current"
+LOCK="$ROOT/update.lock"
+STAMP="$ROOT/.last-build"
+DEPS=(cmake ninja git pkgconf vulkan-headers vulkan-loader spirv-headers shaderc glslang curl)
+
+log() {
+  printf '[llama-update] %s\n' "$*"
+}
+
+stamp_build() {
+  date +%s >"$STAMP"
+}
+
+build_interval_elapsed() {
+  local now last
+
+  ((MIN_INTERVAL > 0)) || return 0
+  [[ -f $STAMP ]] || return 0
+  last=$(<"$STAMP")
+  [[ $last =~ ^[0-9]+$ ]] || return 0
+  now=$(date +%s)
+  ((now - last >= MIN_INTERVAL))
+}
+
+atomic_link() {
+  local target=$1 temporary="$ROOT/.current.$$"
+  ln -s "$target" "$temporary"
+  mv -Tf "$temporary" "$CURRENT"
+}
+
+latest_release() {
+  local _sha ref tag
+  while read -r _sha ref; do
+    tag=${ref#refs/tags/}
+    if [[ $tag =~ ^b[0-9]+$ ]]; then
+      printf '%s\n' "$tag"
+      return 0
+    fi
+  done < <("$GIT_BIN" ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'refs/tags/b*')
+  return 1
+}
+
+server_unit_exists() {
+  "$SYSTEMCTL_BIN" --user cat llama-server.service >/dev/null 2>&1
+}
+
+wait_until_healthy() {
+  local attempt
+  for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
+    if "$CURL_BIN" -fsS --max-time 2 "$HEALTH_URL" >/dev/null 2>&1; then
+      return 0
+    fi
+    ((attempt < HEALTH_ATTEMPTS)) && sleep 2
+  done
+  return 1
+}
+
+prune_releases() {
+  local active='' path path_real
+  local -a candidates=() approved=() sorted=()
+  local retained_fallback=0
+
+  [[ -L $CURRENT ]] && active=$(readlink -f "$CURRENT")
+  shopt -s nullglob
+  candidates=("$RELEASES"/b*)
+  shopt -u nullglob
+
+  for path in "${candidates[@]}"; do
+    path_real=$(readlink -f "$path")
+    if [[ $path_real == "$active" || -f $path/.approved ]]; then
+      approved+=("$path")
+    else
+      rm -rf -- "$path"
+    fi
+  done
+
+  ((${#approved[@]} == 0)) && return 0
+  mapfile -t sorted < <(printf '%s\n' "${approved[@]}" | sort -Vr)
+  for path in "${sorted[@]}"; do
+    path_real=$(readlink -f "$path")
+    [[ $path_real == "$active" ]] && continue
+    if ((retained_fallback == 0)); then
+      retained_fallback=1
+    else
+      rm -rf -- "$path"
+    fi
+  done
+}
+approved_fallback() {
+  local path
+  local -a candidates=() approved=()
+
+  shopt -s nullglob
+  candidates=("$RELEASES"/b*)
+  shopt -u nullglob
+  for path in "${candidates[@]}"; do
+    if [[ $path != "$CANDIDATE" && -f $path/.approved ]]; then
+      approved+=("$path")
+    fi
+  done
+  ((${#approved[@]} > 0)) || return 1
+  printf '%s\n' "${approved[@]}" | sort -Vr | sed -n '1p'
+}
+
+restore_approved_fallback() {
+  local managed=$1 fallback=''
+  fallback=$(approved_fallback || true)
+
+  if [[ -n $fallback ]]; then
+    atomic_link "$fallback"
+    if ((managed == 1)); then
+      "$SYSTEMCTL_BIN" --user restart llama-server.service || true
+    fi
+  else
+    rm -f -- "$CURRENT"
+    if ((managed == 1)); then
+      "$SYSTEMCTL_BIN" --user stop llama-server.service || true
+    fi
+  fi
+  rm -rf -- "$CANDIDATE"
+}
+
+mkdir -p "$RELEASES"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  log 'another update is already running; exiting'
+  exit 0
+fi
+
+if ! build_interval_elapsed; then
+  log "last build was less than $((MIN_INTERVAL / 3600))h ago; nothing to do"
+  exit 0
+fi
+
+LATEST=$(latest_release) || {
+  log "no numbered bNNNNN release found at $REPO_URL"
+  exit 1
+}
+CANDIDATE="$RELEASES/$LATEST"
+OLD_TARGET=''
+[[ -L $CURRENT ]] && OLD_TARGET=$(readlink -f "$CURRENT")
+
+if [[ $OLD_TARGET == "$CANDIDATE" ]]; then
+  if [[ ! -f $CANDIDATE/.complete ]]; then
+    log 'active release is incomplete; refusing to delete it'
+    exit 1
+  fi
+  if [[ -f $CANDIDATE/.approved ]]; then
+    prune_releases
+    log "$LATEST is already active"
+    exit 0
+  fi
+
+  log "$LATEST activation was interrupted; validating before approval"
+  RECOVERY_MANAGED=0
+  if [[ $RESTART_SERVER == 1 ]] && server_unit_exists; then
+    RECOVERY_MANAGED=1
+  fi
+  if ! DEVICE_OUTPUT=$("$CANDIDATE/build/bin/llama-cli" --list-devices); then
+    log 'interrupted candidate failed device validation'
+    restore_approved_fallback "$RECOVERY_MANAGED"
+    exit 1
+  fi
+  printf '%s\n' "$DEVICE_OUTPUT"
+  if [[ $DEVICE_OUTPUT != *Vulkan* ]]; then
+    log 'interrupted candidate does not expose a Vulkan device'
+    restore_approved_fallback "$RECOVERY_MANAGED"
+    exit 1
+  fi
+  if ((RECOVERY_MANAGED == 1)); then
+    if ! "$SYSTEMCTL_BIN" --user restart llama-server.service || ! wait_until_healthy; then
+      log 'interrupted candidate failed server validation'
+      restore_approved_fallback "$RECOVERY_MANAGED"
+      exit 1
+    fi
+  fi
+
+  touch "$CANDIDATE/.approved"
+  stamp_build
+  prune_releases
+  log "$LATEST interrupted activation is now approved"
+  exit 0
+fi
+
+# A build is going to happen, so the toolchain is worth refreshing. Everything
+# above this point is a cheap no-op path that must stay cheap: the timer fires
+# often so that an AC-power skip is retried, not silently swallowed for a week.
+if [[ $SKIP_BREW != 1 ]]; then
+  log 'updating the scoped Linuxbrew build stack'
+  "$BREW_BIN" update
+  "$BREW_BIN" install "${DEPS[@]}"
+  "$BREW_BIN" upgrade "${DEPS[@]}"
+fi
+
+if [[ -z ${LLAMA_VULKAN_INCLUDE_DIR:-} ]]; then
+  LLAMA_VULKAN_INCLUDE_DIR="$($BREW_BIN --prefix vulkan-headers)/include"
+fi
+if [[ -z ${LLAMA_SPIRV_INCLUDE_DIR:-} ]]; then
+  LLAMA_SPIRV_INCLUDE_DIR="$($BREW_BIN --prefix spirv-headers)/include"
+fi
+if [[ -z ${LLAMA_VULKAN_LIBRARY:-} ]]; then
+  LLAMA_VULKAN_LIBRARY="$($BREW_BIN --prefix vulkan-loader)/lib/libvulkan.so"
+fi
+if [[ -z ${LLAMA_CMAKE_PREFIX_PATH:-} ]]; then
+  LLAMA_CMAKE_PREFIX_PATH="$($BREW_BIN --prefix);$($BREW_BIN --prefix curl)"
+fi
+
+if [[ -e $CANDIDATE ]]; then
+  log "removing incomplete candidate $CANDIDATE"
+  rm -rf -- "$CANDIDATE"
+fi
+
+ACTIVATED=0
+MANAGED_SERVER=0
+
+rollback_update() {
+  local status=${1:-$?}
+  trap - ERR INT TERM
+
+  if ((ACTIVATED == 1)); then
+    log 'candidate activation did not commit; restoring previous release'
+    if [[ -n $OLD_TARGET ]]; then
+      atomic_link "$OLD_TARGET"
+      if ((MANAGED_SERVER == 1)); then
+        "$SYSTEMCTL_BIN" --user restart llama-server.service || true
+      fi
+    else
+      rm -f -- "$CURRENT"
+      if ((MANAGED_SERVER == 1)); then
+        "$SYSTEMCTL_BIN" --user stop llama-server.service || true
+      fi
+    fi
+  fi
+
+  rm -rf -- "$CANDIDATE"
+  exit "$status"
+}
+trap 'rollback_update $?' ERR
+trap 'rollback_update 130' INT
+trap 'rollback_update 143' TERM
+
+log "cloning $LATEST"
+"$GIT_BIN" clone --quiet --depth 1 --branch "$LATEST" "$REPO_URL" "$CANDIDATE/source"
+
+log "configuring $LATEST with Vulkan"
+"$CMAKE_BIN" -S "$CANDIDATE/source" -B "$CANDIDATE/build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_VULKAN=ON \
+  -DLLAMA_BUILD_UI=ON \
+  -DLLAMA_BUILD_TESTS=OFF \
+  -DVulkan_INCLUDE_DIR="$LLAMA_VULKAN_INCLUDE_DIR" \
+  -DVulkan_LIBRARY="$LLAMA_VULKAN_LIBRARY" \
+  -DCMAKE_PREFIX_PATH="$LLAMA_CMAKE_PREFIX_PATH"
+
+log "building $LATEST with $BUILD_JOBS jobs"
+CPLUS_INCLUDE_PATH="$LLAMA_SPIRV_INCLUDE_DIR${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}" \
+  "$CMAKE_BIN" --build "$CANDIDATE/build" --parallel "$BUILD_JOBS" \
+  --target llama-server llama-cli llama-bench
+"$CANDIDATE/build/bin/llama-server" --version
+DEVICE_OUTPUT=$("$CANDIDATE/build/bin/llama-cli" --list-devices)
+printf '%s\n' "$DEVICE_OUTPUT"
+if [[ $DEVICE_OUTPUT != *Vulkan* ]]; then
+  log 'candidate does not expose a Vulkan device'
+  false
+fi
+printf '%s\n' "$LATEST" >"$CANDIDATE/.complete"
+
+ACTIVATED=1
+atomic_link "$CANDIDATE"
+log "activated $LATEST"
+
+if [[ $RESTART_SERVER == 1 ]] && server_unit_exists; then
+  MANAGED_SERVER=1
+  log 'restarting llama-server.service'
+  if ! "$SYSTEMCTL_BIN" --user restart llama-server.service; then
+    log 'new server failed to restart'
+    rollback_update 1
+  fi
+  if ! wait_until_healthy; then
+    log 'new server failed its health check'
+    rollback_update 1
+  fi
+fi
+
+touch "$CANDIDATE/.approved"
+trap - ERR INT TERM
+ACTIVATED=0
+stamp_build
+prune_releases
+log "update complete: $LATEST"

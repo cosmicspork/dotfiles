@@ -1,2 +1,6 @@
 .env
 .env.*
+
+# llama-server API key. Belongs only on the host, never in the repo -- the
+# tracked llama-server.env deliberately holds no secret.
+llama-server.key

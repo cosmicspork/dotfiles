@@ -1,0 +1,14 @@
+[Unit]
+Description=Update and rebuild Vulkan-enabled llama.cpp
+Documentation=https://github.com/ggml-org/llama.cpp
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/update-llama-cpp
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin
+# Rebuild at most weekly even though the timer checks daily; see llama-update.timer.
+Environment=LLAMA_MIN_INTERVAL=604800
+Nice=10
+IOSchedulingClass=idle
+UMask=0022
