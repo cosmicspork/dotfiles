@@ -59,6 +59,7 @@ esac
 
 HOME_PROFILE_DIR="$HERE/home/profiles/$PROFILE"
 VSCODE_EXTENSIONS_FILE="$HERE/manifests/vscode-extensions.txt"
+COMPOSER_GLOBALS_FILE="$HERE/manifests/composer-globals.txt"
 
 run() {
   printf '>'; printf ' %q' "$@"; echo
@@ -692,6 +693,36 @@ configure_npm_and_ai_tools() {
   fi
 }
 
+install_composer_globals() {
+  if [[ ! -f "$COMPOSER_GLOBALS_FILE" ]]; then
+    return 0
+  fi
+
+  if ! have composer; then
+    echo "Skipping Composer global packages: composer not found"
+    return 0
+  fi
+
+  local missing=()
+  local pkg
+  while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+    pkg="${pkg%%#*}"
+    pkg="${pkg// }"
+    [[ -z "$pkg" ]] && continue
+    if ! capture_as_target_user composer global show "$pkg" >/dev/null 2>&1; then
+      missing+=("$pkg")
+    fi
+  done < "$COMPOSER_GLOBALS_FILE"
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  if ! run_as_target_user composer global require --no-interaction "${missing[@]}"; then
+    echo "Warning: failed to install Composer global packages: ${missing[*]}"
+  fi
+}
+
 sync_home_dir() {
   local source_dir="$1"
   if [[ ! -d "$source_dir" ]]; then
@@ -735,6 +766,7 @@ install_profile_packages() {
       install_bun
       ensure_node_and_npm
       configure_npm_and_ai_tools
+      install_composer_globals
       ;;
     macos)
       if have brew; then
@@ -743,6 +775,7 @@ install_profile_packages() {
       else
         echo "Skipping macOS packages: Homebrew not found"
       fi
+      install_composer_globals
       ;;
     bazzite)
       if have brew && [[ -f "$HERE/manifests/Brewfile" ]]; then
@@ -750,6 +783,7 @@ install_profile_packages() {
       else
         echo "Skipping Bazzite Homebrew formulae: Homebrew not found"
       fi
+      install_composer_globals
       ;;
   esac
 }

@@ -57,7 +57,7 @@ Home files are applied by copying `home/base/` first, then `home/profiles/<profi
 
 ## Devcontainer setup
 
-`./install` installs Debian tooling, GitHub/GitLab CLIs, shell tools, npm global tools, and VS Code extensions (from the shared `manifests/vscode-extensions.txt`), then applies the base + devcontainer home overlays.
+`./install` installs Debian tooling, GitHub/GitLab CLIs, shell tools, npm global tools, Composer globals (from the shared `manifests/composer-globals.txt`), and VS Code extensions (from the shared `manifests/vscode-extensions.txt`), then applies the base + devcontainer home overlays.
 
 Scope and limitations:
 
@@ -73,7 +73,7 @@ Scope and limitations:
 ./install --profile macos
 ```
 
-This applies base + macOS home overlays, installs the shared VS Code extensions via the `code` CLI, and runs both Homebrew bundles:
+This applies base + macOS home overlays, installs the shared VS Code extensions via the `code` CLI and the shared Composer globals, and runs both Homebrew bundles:
 
 ```bash
 brew bundle install --file manifests/Brewfile
@@ -87,6 +87,14 @@ To apply only home files without package changes:
 ```
 
 ## Composer globals
+
+`manifests/composer-globals.txt` is installed on every profile: bootstrap requires
+any package on the list that `composer global show` does not already report, so
+re-running `./install` never re-resolves what is present. Skipped with a warning
+when `composer` is not on `PATH` (devcontainer images without PHP). `~/.config/composer/vendor/bin`
+is already on `PATH` via the base shell overlay.
+
+To install by hand:
 
 ```bash
 composer global require $(grep -v '^#' < manifests/composer-globals.txt | xargs)
