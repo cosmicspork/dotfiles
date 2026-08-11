@@ -248,6 +248,11 @@ Notes:
 - `--sleep-idle-seconds` parks an idle child after the window. It is unverified
   whether sleeping returns GTT to the system on this box or only idles the
   worker — measure with `free -g` before relying on it to reclaim memory.
+- `LLAMA_CACHE` is exported from `.zshrc.d/30-bazzite.zsh` as well as set in the
+  unit, and the two must agree. Set only in the unit, an interactive
+  `llama-server -hf` silently falls back to `~/.cache/huggingface/hub` and the
+  router never sees the model — with no error, just a download that appears to
+  have vanished.
 - The update timer fires daily but `LLAMA_MIN_INTERVAL=604800` in the service
   holds rebuilds to weekly. The daily cadence exists because
   `ConditionACPower=true` marks a battery-time run as handled, so `Persistent=`
