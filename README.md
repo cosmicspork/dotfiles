@@ -94,10 +94,22 @@ re-running `./install` never re-resolves what is present. Skipped with a warning
 when `composer` is not on `PATH` (devcontainer images without PHP). `~/.config/composer/vendor/bin`
 is already on `PATH` via the base shell overlay.
 
+A bare entry is required as `*`, so nothing is pinned to the major it happened to
+be installed at and `composer global update` can cross majors freely. These are
+personal CLI tools where being current beats being stable; append a constraint
+(`vendor/pkg:^2`) to an entry to deliberately hold one back.
+
+Note that bootstrap only installs what is *missing* — it never updates. Moving
+existing globals forward is a separate, explicit step:
+
+```bash
+composer global update
+```
+
 To install by hand:
 
 ```bash
-composer global require $(grep -v '^#' < manifests/composer-globals.txt | xargs)
+composer global require $(sed 's/#.*//;/^[[:space:]]*$/d;/:/!s/$/:*/' manifests/composer-globals.txt | xargs)
 ```
 
 ## GnuPG on Bazzite/Linux desktops

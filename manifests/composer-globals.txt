@@ -1,6 +1,8 @@
 # Composer global packages — manually required (transitive deps not listed).
-# Installed by bootstrap.sh on every profile; missing packages are required at
-# their latest version. Manually: composer global require $(grep -v '^#' < manifests/composer-globals.txt | xargs)
+# Installed by bootstrap.sh on every profile. A bare name is required as '*' so
+# `composer global update` is free to cross majors; append a constraint
+# (vendor/pkg:^2) only to deliberately hold one back.
+# Manually: composer global require $(sed 's/#.*//;/^[[:space:]]*$/d;/:/!s/$/:*/' manifests/composer-globals.txt | xargs)
 laravel/installer
 laravel/cloud-cli
 laravel/lsp

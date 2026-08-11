@@ -704,13 +704,22 @@ install_composer_globals() {
   fi
 
   local missing=()
-  local pkg
-  while IFS= read -r pkg || [[ -n "$pkg" ]]; do
-    pkg="${pkg%%#*}"
-    pkg="${pkg// }"
-    [[ -z "$pkg" ]] && continue
-    if ! capture_as_target_user composer global show "$pkg" >/dev/null 2>&1; then
-      missing+=("$pkg")
+  local entry name constraint
+  while IFS= read -r entry || [[ -n "$entry" ]]; do
+    entry="${entry%%#*}"
+    entry="${entry// }"
+    [[ -z "$entry" ]] && continue
+
+    # An entry may carry an explicit constraint (vendor/pkg:^2). Bare names are
+    # required as '*' so a global never sticks on the major it was installed at.
+    name="${entry%%:*}"
+    constraint='*'
+    if [[ "$entry" == *:* ]]; then
+      constraint="${entry#*:}"
+    fi
+
+    if ! capture_as_target_user composer global show "$name" >/dev/null 2>&1; then
+      missing+=("$name:$constraint")
     fi
   done < "$COMPOSER_GLOBALS_FILE"
 
