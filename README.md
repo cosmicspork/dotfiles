@@ -235,8 +235,10 @@ Notes:
   and loads a model on the first request naming it. Requests pick a model with
   the `model` field (POST) or `?model=` (GET); `GET /models` lists them.
 - `--models-max 1` makes a second model evict the first instead of trying to
-  hold both. Switching therefore costs a full load — tens of seconds for a
-  50 GB model — which is the deliberate trade for not parking it in RAM.
+  hold both. Measured switch cost, Muse Glimmer to Qwen: 38 s including the
+  eviction, the 49.6 GB load, and a short generation. A cold on-demand load of
+  the 20 GB model is ~11 s. That latency is the deliberate trade for not
+  parking a model in RAM.
 - Preset section names must match the id the router derives, which is not always
   the tag you downloaded: `Qwen3-Coder-Next-UD-Q4_K_XL.gguf` resolves to
   `unsloth/Qwen3-Coder-Next-GGUF:Q4_K_XL`. Check `GET /models` after adding one;
@@ -245,9 +247,10 @@ Notes:
 - `jinja = true` in `llama-models.ini` is required for OpenAI-style tool calling;
   without it the server returns 500 on any request carrying a `tools` param. It
   defaults to enabled as of b10362 but is set explicitly to survive a flip.
-- `--sleep-idle-seconds` parks an idle child after the window. It is unverified
-  whether sleeping returns GTT to the system on this box or only idles the
-  worker — measure with `free -g` before relying on it to reclaim memory.
+- `--sleep-idle-seconds` does return the memory: measured on this host, an idle
+  child dropped usage from 31 GB to 11 GB and reported `sleeping`, and the next
+  request woke it in ~8 s. That is the mechanism that keeps a model from sitting
+  in RAM overnight; `--models-max 1` only bounds how many can be resident at once.
 - `LLAMA_CACHE` is exported from `.zshrc.d/30-bazzite.zsh` as well as set in the
   unit, and the two must agree. Set only in the unit, an interactive
   `llama-server -hf` silently falls back to `~/.cache/huggingface/hub` and the
