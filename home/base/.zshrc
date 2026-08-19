@@ -20,6 +20,6 @@ if [ -f "$HOME/.zshrc.local" ]; then
 fi
 
 # Syntax highlighting (must be last)
-if [ -f "$HOME/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]; then
+if [[ -o interactive && -t 0 && -t 1 && $TERM != dumb && -f "$HOME/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then
   source "$HOME/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 fi
