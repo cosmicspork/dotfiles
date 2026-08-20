@@ -171,7 +171,8 @@ Tracked files (bazzite profile):
 .local/bin/update-llama-cpp                    # source build + atomic release switch
 .config/systemd/user/llama-update.{service,timer}
 .config/systemd/user/llama-server.service
-.config/llama-server.env                       # model and flags
+.config/llama-server.env                       # server-wide flags
+.config/llama-models.ini                       # per-model router presets
 tests/test-update.sh                           # repo-level; run manually
 ```
 
@@ -208,13 +209,15 @@ Per-machine setup:
    ```bash
    umask 077 && openssl rand -hex 32 > ~/.config/llama-server.key
    ```
-5. Pick a model in `~/.config/llama-server.env`, then enable both units:
+5. Populate the cache with at least one model, then enable both units:
    ```bash
+   llama-server -hf <user>/<repo>:<quant>   # downloads into ~/.cache/llama.cpp, then Ctrl-C
    systemctl --user enable --now llama-update.timer llama-server.service
    ```
-   First start downloads the model into `~/.cache/llama.cpp`, which can take a
-   while on a cold cache. Pre-fetch it before enabling the service if the
-   download would outrun the updater's health-check window.
+   The server runs in router mode and serves whatever is in `~/.cache/llama.cpp`,
+   so adding a model is a download plus a restart — no env edit needed unless it
+   wants non-default flags. Pre-fetch rather than letting the first start pull a
+   cold model, or the download outruns the updater's health-check window.
 
 Notes:
 
@@ -227,8 +230,32 @@ Notes:
 - The API key is what actually protects the endpoint. CORS does not stop DNS
   rebinding — the server performs no `Host` header validation — and it does not
   stop other local processes. Any client, including omp, needs the key.
-- `--jinja` in `llama-server.env` is required for OpenAI-style tool calling;
-  without it the server returns 500 on any request carrying a `tools` param.
+- Router mode (`--models-preset`, passed from the unit because `%h` does not
+  expand in an `EnvironmentFile`) means the server holds no weights at startup
+  and loads a model on the first request naming it. Requests pick a model with
+  the `model` field (POST) or `?model=` (GET); `GET /models` lists them.
+- `--models-max 1` makes a second model evict the first instead of trying to
+  hold both. Measured switch cost, Muse Glimmer to Qwen: 38 s including the
+  eviction, the 49.6 GB load, and a short generation. A cold on-demand load of
+  the 20 GB model is ~11 s. That latency is the deliberate trade for not
+  parking a model in RAM.
+- Preset section names must match the id the router derives, which is not always
+  the tag you downloaded: `Qwen3-Coder-Next-UD-Q4_K_XL.gguf` resolves to
+  `unsloth/Qwen3-Coder-Next-GGUF:Q4_K_XL`. Check `GET /models` after adding one;
+  a name that matches nothing defines a second, unloadable model rather than
+  erroring.
+- `jinja = true` in `llama-models.ini` is required for OpenAI-style tool calling;
+  without it the server returns 500 on any request carrying a `tools` param. It
+  defaults to enabled as of b10362 but is set explicitly to survive a flip.
+- `--sleep-idle-seconds` does return the memory: measured on this host, an idle
+  child dropped usage from 31 GB to 11 GB and reported `sleeping`, and the next
+  request woke it in ~8 s. That is the mechanism that keeps a model from sitting
+  in RAM overnight; `--models-max 1` only bounds how many can be resident at once.
+- `LLAMA_CACHE` is exported from `.zshrc.d/30-bazzite.zsh` as well as set in the
+  unit, and the two must agree. Set only in the unit, an interactive
+  `llama-server -hf` silently falls back to `~/.cache/huggingface/hub` and the
+  router never sees the model — with no error, just a download that appears to
+  have vanished.
 - The update timer fires daily but `LLAMA_MIN_INTERVAL=604800` in the service
   holds rebuilds to weekly. The daily cadence exists because
   `ConditionACPower=true` marks a battery-time run as handled, so `Persistent=`

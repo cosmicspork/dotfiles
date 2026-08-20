@@ -43,3 +43,9 @@ fi
 if command -v bat >/dev/null 2>&1; then
   alias cat='bat --paging=never'
 fi
+
+# Profile overlays drop fragments here, mirroring .zshrc.d for zsh.
+for _dotfile in "$HOME"/.bashrc.d/*.bash; do
+  [ -f "$_dotfile" ] && . "$_dotfile"
+done
+unset _dotfile
