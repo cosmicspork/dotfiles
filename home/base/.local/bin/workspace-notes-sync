@@ -1,0 +1,31 @@
+#!/bin/sh
+# Snapshot the workspace notes (README.md + docs/) into a bare git repo held
+# outside the work tree, and push when an "origin" remote is configured.
+#
+# The work tree keeps no .git of its own, so ~/src still reads as "not a git
+# repository" to tooling that checks. Which paths are tracked is decided by
+# $GIT_DIR/info/exclude, not by this script.
+#
+# Overrides: WORKSPACE_NOTES_GIT, WORKSPACE_NOTES_WORKTREE.
+set -eu
+GIT_DIR="${WORKSPACE_NOTES_GIT:-$HOME/.workspace-notes.git}"
+WORK_TREE="${WORKSPACE_NOTES_WORKTREE:-$HOME/src}"
+export GIT_DIR GIT_WORK_TREE="$WORK_TREE"
+
+[ -d "$GIT_DIR" ] || { echo "no notes repo at $GIT_DIR" >&2; exit 1; }
+cd "$WORK_TREE"
+
+git add -A
+changed=$(git diff --cached --name-only | wc -l | tr -d ' ')
+if [ "$changed" -gt 0 ]; then
+    git commit -q -m "chore: notes snapshot $(date '+%Y-%m-%d %H:%M')"
+    echo "committed $changed changed file(s)"
+else
+    echo "no changes"
+fi
+
+if git remote get-url origin >/dev/null 2>&1; then
+    git push -q origin HEAD && echo "pushed"
+else
+    echo "no remote configured; local history only"
+fi

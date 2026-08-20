@@ -244,3 +244,40 @@ Notes:
   ```
   They default to the tracked source. Override with
   `SCRIPT=~/.local/bin/update-llama-cpp` to test an installed copy.
+
+## Workspace notes backup
+
+Versions `~/src/README.md` and `~/src/docs/` — the cross-repo conventions file and the working
+notes — without putting a `.git` inside `~/src`, which holds many nested repos and is expected
+by tooling to read as *not* a git repository.
+
+```
+home/base/.local/bin/workspace-notes-sync
+home/profiles/bazzite/.config/systemd/user/workspace-notes-sync.{service,timer}
+home/profiles/macos/Library/.../switchboard/agents/dev.workspace-notes.sync.plist
+```
+
+A **bare** repo at `~/.workspace-notes.git` is paired with an explicit work tree, so git state
+lives entirely outside `~/src`. Which paths are tracked is decided by a whitelist in
+`$GIT_DIR/info/exclude`, not by the script, so the same helper works against any work tree:
+
+```sh
+git init --bare -b main ~/.workspace-notes.git
+printf '*\n!README.md\n!docs/\n!docs/**\ndocs/archive/\n.DS_Store\n**/.DS_Store\ndocs/.*\n' \
+  > ~/.workspace-notes.git/info/exclude
+git --git-dir=$HOME/.workspace-notes.git --work-tree=$HOME/src add -A
+git --git-dir=$HOME/.workspace-notes.git --work-tree=$HOME/src commit -m 'initial'
+```
+
+The leading `*` means nothing is tracked until it is explicitly un-ignored. **Check what the
+first `add -A` actually staged before adding a remote** — a `docs/` directory can pick up
+credential files dropped there by other tools.
+
+Add a remote to get off-machine copies (`git ... remote add origin <url>`); with none
+configured the helper commits locally and says so rather than failing.
+
+Set `WORKSPACE_NOTES_GIT` / `WORKSPACE_NOTES_WORKTREE` to point it elsewhere.
+
+On Bazzite: `systemctl --user enable --now workspace-notes-sync.timer`. On macOS the plist is
+loaded from Switchboard's menu ("Workspace Notes Backup") rather than `~/Library/LaunchAgents`,
+matching the other helpers there.
