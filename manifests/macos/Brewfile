@@ -1,4 +1,10 @@
-# macOS-only Homebrew casks. Shared formulae live in manifests/Brewfile.
+# macOS-only Homebrew packages. Shared formulae live in manifests/Brewfile.
+# Container runtime: podman machine, with the docker CLI talking to its socket
+brew "podman"
+# Docker CLI, used by the devcontainer CLI against the podman socket
+brew "docker"
+# Stores docker registry logins in the macOS keychain
+brew "docker-credential-helper"
 # OpenAI's coding agent that runs in your terminal
 cask "codex"
 # Plain-text editor for web pages, program source codes and more
