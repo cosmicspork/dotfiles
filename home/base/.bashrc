@@ -5,7 +5,9 @@ case $- in
   *) return ;;
 esac
 
-if command -v zsh >/dev/null 2>&1 && [ -z "${ZSH_VERSION:-}" ]; then
+# `exec` would discard a `bash -ic '<cmd>'` string, so only hand off a real terminal session.
+if command -v zsh >/dev/null 2>&1 && [ -z "${ZSH_VERSION:-}" ] \
+  && [ -z "${BASH_EXECUTION_STRING:-}" ] && [ -t 0 ] && [ -t 1 ]; then
   exec zsh -l
 fi
 
@@ -34,14 +36,16 @@ if command -v delta >/dev/null 2>&1; then
   export GIT_PAGER="delta"
 fi
 
-if command -v eza >/dev/null 2>&1; then
-  alias ls='eza'
-  alias ll='eza -l --group --git'
-  alias la='eza -la --group --git'
-fi
+if [ -t 0 ] && [ -t 1 ]; then
+  if command -v eza >/dev/null 2>&1; then
+    alias ls='eza'
+    alias ll='eza -l --group --git'
+    alias la='eza -la --group --git'
+  fi
 
-if command -v bat >/dev/null 2>&1; then
-  alias cat='bat --paging=never'
+  if command -v bat >/dev/null 2>&1; then
+    alias cat='bat --paging=never'
+  fi
 fi
 
 # Profile overlays drop fragments here, mirroring .zshrc.d for zsh.

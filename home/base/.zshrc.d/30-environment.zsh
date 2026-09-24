@@ -3,6 +3,10 @@ if command -v hx >/dev/null 2>&1; then
   export EDITOR="hx"
 fi
 
+if [[ ! -t 0 || ! -t 1 ]]; then
+  export GIT_EDITOR="true"
+fi
+
 if command -v direnv >/dev/null 2>&1; then
   eval "$(direnv hook zsh)"
 fi
