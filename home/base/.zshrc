@@ -6,7 +6,7 @@ plugins=(
     sudo
 )
 
-if [ -d "$ZSH" ]; then
+if [[ -o interactive && -t 0 && -t 1 && $TERM != dumb && -d "$ZSH" ]]; then
   source "$ZSH/oh-my-zsh.sh"
 fi
 
