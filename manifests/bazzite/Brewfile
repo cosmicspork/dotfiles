@@ -1,0 +1,12 @@
+# Bazzite-only Homebrew formulae. Shared formulae live in manifests/Brewfile.
+#
+# The image is immutable, so Fedora's -devel packages are not installable
+# without layering. These carry the WebKitGTK/GTK3 headers a Tauri app (tracon's
+# desktop wrapper) builds against; the runtime libraries are the image's own.
+# Linux-only formulae, which is why they are not in the shared Brewfile.
+# GTK interface to WebKit (webkit2gtk-4.1, javascriptcoregtk-4.1, libsoup 3)
+brew "webkitgtk"
+# Ayatana Application Indicators Shared Library (tray icon)
+brew "libayatana-appindicator"
+# Library to render SVG files using Cairo
+brew "librsvg"

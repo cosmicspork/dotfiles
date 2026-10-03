@@ -789,6 +789,7 @@ install_profile_packages() {
     bazzite)
       if have brew && [[ -f "$HERE/manifests/Brewfile" ]]; then
         run brew bundle install --file "$HERE/manifests/Brewfile"
+        [[ -f "$HERE/manifests/bazzite/Brewfile" ]] && run brew bundle install --file "$HERE/manifests/bazzite/Brewfile"
       else
         echo "Skipping Bazzite Homebrew formulae: Homebrew not found"
       fi
