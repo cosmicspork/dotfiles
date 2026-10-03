@@ -21,7 +21,7 @@ Override detection when needed:
 
 - `devcontainer` — Debian/apt bootstrap plus devcontainer-focused home overlay. This remains the fallback/default profile.
 - `macos` — base home overlay plus macOS shell additions, the shared `manifests/Brewfile`, and macOS casks in `manifests/macos/Brewfile`.
-- `bazzite` — base home overlay plus Bazzite shell additions. Installs the shared `manifests/Brewfile` via Homebrew (preinstalled on Bazzite); the Flatpak, uv-tool, and font manifests are present but not yet wired.
+- `bazzite` — base home overlay plus Bazzite shell additions. Installs the shared `manifests/Brewfile` and the Linux-only `manifests/bazzite/Brewfile` via Homebrew (preinstalled on Bazzite); the Flatpak, uv-tool, and font manifests are present but not yet wired.
 
 Profile detection:
 
@@ -46,6 +46,7 @@ manifests/composer-globals.txt         # Composer global package list (shared)
 manifests/Brewfile                     # shared Homebrew formulae (macOS + Bazzite)
 manifests/devcontainer/tools.txt       # devcontainer apt tool list
 manifests/macos/Brewfile               # macOS-only Homebrew casks
+manifests/bazzite/Brewfile             # Bazzite-only Homebrew formulae (WebKitGTK headers)
 manifests/bazzite/flatpaks.txt         # Bazzite Flatpak application IDs
 manifests/bazzite/fonts.txt            # Bazzite Nerd Fonts (shared with macOS cask)
 manifests/bazzite/packages.txt         # Bazzite native packages (placeholder)
@@ -85,6 +86,28 @@ To apply only home files without package changes:
 ```bash
 ./install --profile macos --home-only
 ```
+
+## Rust on the host
+
+`rustup` comes from the shared Brewfile and is keg-only, so the macOS and Bazzite
+shell fragments put its keg bin (`$(brew --prefix)/opt/rustup/bin`) on `PATH`;
+that is where `cargo` and `rustc` live. A repo's `rust-toolchain.toml` picks the
+toolchain, which rustup installs on first use. Alongside it:
+
+- `cargo-nextest`, the test runner the Rust repos' CI uses.
+- `cargo-zigbuild` (and `zig`, its dependency) for static musl builds. Fedora's
+  `musl-gcc` is not installable on an immutable image, and `cargo zigbuild
+  --target x86_64-unknown-linux-musl` needs nothing else. Add the target first
+  with `rustup target add x86_64-unknown-linux-musl`.
+- On Bazzite, `manifests/bazzite/Brewfile` adds the WebKitGTK, GTK3 and appindicator
+  headers a Tauri app compiles against. They stay off the default pkg-config path
+  on purpose, so brew's libraries never win over the image's for other builds; a
+  build that needs them prefixes `PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/share/pkgconfig"`
+  (tracon's `just wrapper` and `just wrapper-check` do this themselves). The
+  binary still loads the image's own WebKitGTK at runtime.
+
+Bundling a Tauri AppImage still wants a Fedora container (`distrobox`), since the
+bundler collects system libraries; checks, tests and release builds do not.
 
 ## Composer globals
 

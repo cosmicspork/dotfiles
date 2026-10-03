@@ -46,6 +46,10 @@ brew "ripgrep"
 brew "opencode"
 # Rust toolchain installer (manages cargo/rustc; keg-only)
 brew "rustup"
+# Next-generation test runner for Rust
+brew "cargo-nextest"
+# Compile Cargo project with zig as linker (musl targets without a musl gcc)
+brew "cargo-zigbuild"
 # Intuitive find & replace CLI
 brew "sd"
 # Static analysis and lint tool, for (ba)sh scripts
