@@ -5,6 +5,8 @@ brew "podman"
 brew "docker"
 # Stores docker registry logins in the macOS keychain
 brew "docker-credential-helper"
+# AWS CLI, for SSO login and EKS kubeconfig (infrastructure/kubernetes clusters)
+brew "awscli"
 # OpenAI's coding agent that runs in your terminal
 cask "codex"
 # Plain-text editor for web pages, program source codes and more
