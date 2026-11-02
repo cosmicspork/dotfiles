@@ -2,6 +2,9 @@
 # Bazzite, which ships brew as the blessed path for CLI tools). Profile-specific
 # casks live in manifests/<profile>/Brewfile.
 tap "fluxcd/tap"
+# bun comes from Bun's own tap. brew refuses a formula whose name is already
+# installed from another tap, and one conflict fails the whole bundle.
+tap "oven-sh/bun"
 # Simple, modern, secure file encryption
 brew "age"
 # Improved shell history for zsh, bash, fish and nushell
@@ -9,7 +12,7 @@ brew "atuin"
 # Clone of cat(1) with syntax highlighting and Git integration
 brew "bat"
 # Incredibly fast JavaScript runtime, bundler, test runner, and package manager
-brew "bun"
+brew "oven-sh/bun/bun"
 # General-purpose scripting language
 brew "php"
 # Dependency Manager for PHP
