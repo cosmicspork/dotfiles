@@ -1,19 +1,54 @@
-modelRoles: 
-  smol: anthropic/claude-sonnet-4-6
-  default: anthropic/claude-opus-4-8:high
-theme: 
+modelRoles:
+  slow: openai-codex/gpt-5.6-sol
+  plan: openai-codex/gpt-5.6-sol
+  designer: openai-codex/gpt-5.6-sol
+  advisor: openai-codex/gpt-5.6-sol
+  web: web/kagi
+  default: openai-codex/gpt-6-luna
+theme:
   dark: dark-forest
   light: light-forest
 symbolPreset: nerd
-statusLine: 
+statusLine:
   preset: full
-providers: 
-  webSearch: kagi
-  tinyModel: lfm2-700m
-  tinyModelDevice: gpu
+providers:
+  tinyModelDevice: default
 defaultThinkingLevel: auto
-hideThinkingBlock: true
-memory: 
+hideThinkingBlock: false
+memory:
   backend: mnemopi
-mnemopi: 
+mnemopi:
   scoping: per-project-tagged
+setupVersion: 2
+dev:
+  autoqaConsent: denied
+composer:
+  shape: box
+retry:
+  fallbackChains:
+    web:
+      - web/perplexity
+      - google-gemini-cli/gemini-2.5-flash
+      - google-antigravity/gemini-2.5-flash
+      - google/gemini-2.5-flash
+      - anthropic/claude-haiku-4-5
+      - openai-codex/gpt-5.6-luna
+      - xai/grok-4.5
+      - web/zai
+      - web/exa
+      - web/tinyfish
+      - web/jina
+      - web/tavily
+      - web/firecrawl
+      - web/brave
+      - web/kimi
+      - web/parallel
+      - web/synthetic
+      - web/searxng
+      - web/startpage
+      - web/duckduckgo
+      - web/ecosia
+      - web/google
+      - web/mojeek
+      - web/public
+      - web/hosted
