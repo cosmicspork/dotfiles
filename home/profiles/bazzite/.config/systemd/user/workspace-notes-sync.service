@@ -1,7 +1,0 @@
-[Unit]
-Description=Snapshot workspace notes into the bare notes repo
-Documentation=file:%h/src/README.md
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/workspace-notes-sync
