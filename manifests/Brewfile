@@ -40,6 +40,8 @@ brew "helm"
 brew "kubernetes-cli"
 # Media player based on MPlayer and mplayer2
 brew "mpv"
+# Unofficial Bitwarden CLI client
+brew "rbw"
 # Search tool like grep and The Silver Searcher
 brew "ripgrep"
 # AI coding agent, built for the terminal
