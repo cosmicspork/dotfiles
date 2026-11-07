@@ -1,0 +1,10 @@
+# Scraped by victoria-metrics.service itself (no vmagent). VictoriaMetrics'
+# own health comes from -selfScrapeInterval in the unit.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # Sensors, power, pressure, and the per-app cgroup textfile.
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]

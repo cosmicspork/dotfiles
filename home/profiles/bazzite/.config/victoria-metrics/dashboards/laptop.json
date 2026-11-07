@@ -1,0 +1,88 @@
+{
+  "title": "laptop: what is using it, and how hot",
+  "rows": [
+    {
+      "title": "Apps",
+      "panels": [
+        {
+          "title": "CPU by app (cores)",
+          "description": "Top 10 apps by average CPU. One cgroup per app; Flatpaks, desktop launches and system services each count separately.",
+          "width": 6,
+          "expr": ["topk_avg(10, sum by (app) (rate(cgroup_cpu_usage_seconds_total)))"]
+        },
+        {
+          "title": "Memory by app",
+          "width": 6,
+          "expr": ["topk_max(10, sum by (app) (cgroup_memory_bytes))"]
+        },
+        {
+          "title": "Disk IO by app (bytes/s)",
+          "width": 6,
+          "expr": ["topk_avg(8, sum by (app) (rate(cgroup_io_read_bytes_total) + rate(cgroup_io_write_bytes_total)))"]
+        },
+        {
+          "title": "Busy CPU (cores)",
+          "width": 6,
+          "expr": ["sum(rate(node_cpu_seconds_total{mode!~\"idle|iowait\"}))"]
+        }
+      ]
+    },
+    {
+      "title": "Heat",
+      "panels": [
+        {
+          "title": "CPU (k10temp) and GPU temperature (°C)",
+          "width": 6,
+          "expr": ["node_hwmon_temp_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names{chip_name=~\"k10temp|amdgpu\"}"]
+        },
+        {
+          "title": "Fan (rpm)",
+          "width": 6,
+          "expr": ["max(node_hwmon_fan_rpm)"]
+        },
+        {
+          "title": "Package power (W)",
+          "description": "amdgpu power1 on this APU is the whole SoC: CPU and GPU.",
+          "width": 6,
+          "expr": ["node_hwmon_power_watt * on(chip) group_left(chip_name) node_hwmon_chip_names{chip_name=\"amdgpu\"}"]
+        },
+        {
+          "title": "GPU busy (%) and average CPU clock (GHz)",
+          "width": 6,
+          "expr": [
+            "node_drm_gpu_busy_percent",
+            "avg(node_cpu_scaling_frequency_hertz) / 1e9"
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Power and memory",
+      "panels": [
+        {
+          "title": "Battery (%) and AC",
+          "width": 6,
+          "expr": [
+            "node_power_supply_capacity{power_supply=\"BAT1\"}",
+            "node_power_supply_online{power_supply=\"ACAD\"} * 100"
+          ]
+        },
+        {
+          "title": "Memory available",
+          "width": 6,
+          "expr": ["node_memory_MemAvailable_bytes"]
+        },
+        {
+          "title": "Pressure: share of time some task stalled (0-1)",
+          "description": "PSI: CPU means waiting for a core, memory for reclaim or swap-in, IO for the disk.",
+          "width": 6,
+          "expr": [
+            "rate(node_pressure_cpu_waiting_seconds_total)",
+            "rate(node_pressure_memory_waiting_seconds_total)",
+            "rate(node_pressure_io_waiting_seconds_total)"
+          ]
+        }
+      ]
+    }
+  ]
+}

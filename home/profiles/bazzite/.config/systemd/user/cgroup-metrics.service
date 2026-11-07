@@ -1,0 +1,17 @@
+[Unit]
+Description=Per-app CPU, memory and IO from cgroups, for node_exporter
+ConditionPathExists=%h/.local/bin/cgroup-metrics
+# Started by victoria-metrics.service; stops and restarts with it.
+PartOf=victoria-metrics.service
+After=node-exporter.service
+
+[Service]
+Type=exec
+# A long-running loop rather than a 15-second timer: a timer logs a start and a
+# finish to the journal on every run, ~11k lines a day.
+ExecStart=/usr/bin/python3 -I %h/.local/bin/cgroup-metrics
+Environment=CGROUP_METRICS_OUT=%t/node-exporter/cgroup.prom
+Restart=on-failure
+RestartSec=5s
+MemoryMax=64M
+CPUWeight=20

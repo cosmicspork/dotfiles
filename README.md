@@ -46,7 +46,7 @@ manifests/composer-globals.txt         # Composer global package list (shared)
 manifests/Brewfile                     # shared Homebrew formulae (macOS + Bazzite)
 manifests/devcontainer/tools.txt       # devcontainer apt tool list
 manifests/macos/Brewfile               # macOS-only Homebrew casks
-manifests/bazzite/Brewfile             # Bazzite-only Homebrew formulae (WebKitGTK headers)
+manifests/bazzite/Brewfile             # Bazzite-only Homebrew formulae (WebKitGTK headers, metrics stack)
 manifests/bazzite/flatpaks.txt         # Bazzite Flatpak application IDs
 manifests/bazzite/fonts.txt            # Bazzite Nerd Fonts (shared with macOS cask)
 manifests/bazzite/packages.txt         # Bazzite native packages (placeholder)
@@ -294,3 +294,113 @@ Notes:
   ```
   They default to the tracked source. Override with
   `SCRIPT=~/.local/bin/update-llama-cpp` to test an installed copy.
+
+## Local metrics on Bazzite (VictoriaMetrics)
+
+Keeps 90 days of what the laptop was doing, so "the fan just spun up, what was
+it?" has an answer after the fact. The journal already keeps history; CPU,
+temperature, fan and power had none, only their current values.
+
+Tracked files (bazzite profile):
+
+```text
+.config/systemd/user/victoria-metrics.service   # the store, and the one unit to switch
+.config/systemd/user/node-exporter.service      # sensors, power, pressure; runs with it
+.config/systemd/user/cgroup-metrics.service     # per-app cgroup counters; runs with it
+.config/victoria-metrics/scrape.yaml
+.config/victoria-metrics/dashboards/laptop.json # vmui: Dashboards
+.config/switchboard/helpers.toml                # tray entries, including "Metrics"
+.local/bin/cgroup-metrics
+.local/bin/what-happened
+tests/test-cgroup-metrics.sh                    # repo-level; run manually
+```
+
+`victoriametrics` and `node_exporter` come from `manifests/bazzite/Brewfile`. Data
+lives in `~/.local/state/victoria-metrics` and is not tracked.
+
+Per-machine setup:
+
+1. Generate the admin key. It is host-only and never tracked; the unit refuses to
+   start without it rather than leave delete, snapshot and pprof open.
+   ```bash
+   umask 077 && openssl rand -hex 32 > ~/.config/victoria-metrics/admin-key
+   ```
+2. Start it and keep it on at login, from Switchboard (Metrics: Start at login,
+   after Reload config) or:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now victoria-metrics.service
+   ```
+3. The query UI is `http://127.0.0.1:8428/vmui/` (Switchboard: Open in browser);
+   the laptop dashboard is under Dashboards.
+
+Asking what happened:
+
+```bash
+what-happened                          # the last 15 minutes
+what-happened --since 2h
+what-happened --since 17:40 --until 17:50
+```
+
+It prints peak temperature, fan, package power and busy CPU, a per-minute
+timeline with the top app by CPU in each minute, the top apps over the window,
+then journal warnings and unit start/stop lines from the same window. The
+journal half works with the metrics stack off.
+
+What is recorded, every 15 s:
+
+- **Per app**, from cgroups: CPU time, memory, swap, disk read and write, task
+  count. A systemd session already runs each app in its own cgroup (a Flatpak in
+  `app-flatpak-<id>-<n>.scope`, an autostart entry in `app-<id>@autostart.service`,
+  each system service in `system.slice`), so nothing walks processes. Series
+  carry `app`, a stable name with the launch counter stripped
+  (`com.rtosta.zapzap`, `steam`, `fw-fanctrl`), and `unit`, the raw cgroup.
+- **The machine**, from node_exporter: CPU and GPU temperature, fan RPM and
+  package power (hwmon), GPU busy (drm), CPU time and clock, pressure (PSI),
+  memory, disk, network, battery and AC.
+
+Starting points (MetricsQL):
+
+```
+# CPU by app, in cores
+sum by (app) (rate(cgroup_cpu_usage_seconds_total[1m]))
+# CPU temperature; sensors are picked by chip name, since `chip` is a bus address
+node_hwmon_temp_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names{chip_name="k10temp"}
+# Fan
+max(node_hwmon_fan_rpm)
+```
+
+Notes:
+
+- Query by `app` and sum (`sum by (app)`). The script keeps one series per
+  cgroup on purpose: summing there would make a counter drop whenever one
+  instance of an app exits, which `rate()` reads as a reset and turns into a
+  false spike.
+- The granularity is the cgroup, not the process. Everything started from a
+  Konsole window (an agent, a build) counts as `org.kde.konsole`; drill into
+  processes live with `top` while it is happening.
+- It listens on `127.0.0.1` only, with CORS off: by default VictoriaMetrics
+  answers any `Origin` with `*`, which would let any web page read which apps you
+  run. The admin endpoints need `?authKey=` with the key above. Reads stay open
+  to local processes, which can read the same from `/proc` anyway.
+- Pruning is VictoriaMetrics' own: `-retentionPeriod=90d` drops older data, and
+  `-storage.minFreeDiskSpaceBytes=10GB` stops writes before the disk fills.
+- `-search.latencyOffset=5s` instead of the default 30s, so a query right after
+  a spike sees it.
+- `StateDirectory=` is deliberately not used. With `~/.config/victoria-metrics`
+  present, systemd takes it for the pre-v254 state location and symlinks
+  `~/.local/state/victoria-metrics` to it, which puts the data in `.config`.
+- node_exporter runs with `--collector.disable-defaults` and an explicit list.
+  `rapl` is left out because its energy counters are root-only.
+- cgroup-metrics is a loop rather than a 15-second timer: a timer logs a start
+  and a finish on every run, about 11k journal lines a day.
+- All three units have `CPUWeight=20` and memory caps; telemetry should never
+  be what spins the fan. Measured here over its first 5 minutes, including
+  startup and test queries: 0.86% of one core in total and about 110 MB of
+  memory, ingesting about 110 samples/s (roughly 1,600 series). VictoriaMetrics
+  usually stores under a byte per sample once merged, which puts 90 days near
+  1 GB; that figure is an estimate, not a measurement.
+- Run the tests after changing cgroup-metrics:
+  ```bash
+  ./tests/test-cgroup-metrics.sh
+  ```
