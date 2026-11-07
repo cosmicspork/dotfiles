@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""What was this machine doing? Metrics and journal for one time window.
+
+usage: what-happened [--since 15m] [--until now] [--top 8] [--log-lines 40]
+
+--since/--until take a duration ago (90s, 15m, 2h, 1d) or anything `date -d`
+understands ("17:40", "yesterday 22:00", an ISO timestamp). Prints peak
+temperature, fan and power; a timeline with the top app by CPU in each step;
+the top apps over the whole window; then journal warnings and unit start/stop
+lines from the same window.
+
+Metrics come from the local VictoriaMetrics (victoria-metrics.service,
+VM_URL to override); the journal half works without it.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+VM = os.environ.get("VM_URL", "http://127.0.0.1:8428")
+
+# Sensors are matched by hwmon chip *name*; the chip label is a bus address.
+TEMP = 'max(node_hwmon_temp_celsius * on(chip) group_left node_hwmon_chip_names{chip_name="k10temp"})'
+FAN = "max(node_hwmon_fan_rpm)"
+POWER = 'sum(node_hwmon_power_watt * on(chip) group_left node_hwmon_chip_names{chip_name="amdgpu"})'
+BUSY = 'sum(rate(node_cpu_seconds_total{{mode!~"idle|iowait"}}[{w}]))'
+APP_CPU = "sum by (app) (rate(cgroup_cpu_usage_seconds_total[{w}]))"
+
+
+def when(s, now):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd])", s.strip())
+    if m:
+        return now - float(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    if s.strip() == "now":
+        return now
+    r = subprocess.run(["date", "-d", s, "+%s"], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"what-happened: cannot parse time {s!r}")
+    return float(r.stdout)
+
+
+def vm(path, **params):
+    url = f"{VM}{path}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=20) as r:
+        body = json.load(r)
+    if body.get("status") != "success":
+        raise RuntimeError(body.get("error", body))
+    return body["data"]["result"]
+
+
+def series(expr, start, end, step):
+    """{label-tuple: [(ts, value), ...]} for a range query."""
+    out = {}
+    for s in vm("/api/v1/query_range", query=expr, start=start, end=end, step=f"{step}s"):
+        key = tuple(sorted(s["metric"].items()))
+        out[key] = [(float(t), float(v)) for t, v in s["values"]]
+    return out
+
+
+def instant(expr, at):
+    return {s["metric"].get("app", ""): float(s["value"][1]) for s in vm("/api/v1/query", query=expr, time=at)}
+
+
+def single(expr, start, end, step):
+    s = series(expr, start, end, step)
+    return dict(next(iter(s.values()), []))
+
+
+def hm(ts, secs=False):
+    return time.strftime("%H:%M:%S" if secs else "%H:%M", time.localtime(ts))
+
+
+def size(b):
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024 or unit == "GB":
+            return f"{b:.0f} {unit}" if unit in ("B", "KB") else f"{b:.1f} {unit}"
+        b /= 1024
+
+
+def fmt(v, spec):
+    return format(v, spec) if v is not None else "-"
+
+
+def metrics_report(start, end, top):
+    span = end - start
+    step = 60 if span <= 2 * 3600 else 300 if span <= 12 * 3600 else 900
+    w = f"{step}s"
+
+    # Peaks at scrape resolution.
+    print("Peaks")
+    for name, expr, unit, spec in (("CPU temp", TEMP, "°C", ".0f"), ("fan", FAN, "rpm", ".0f"),
+                                   ("package power", POWER, "W", ".1f"),
+                                   ("busy CPU", BUSY.format(w="30s"), "cores", ".1f")):
+        pts = single(expr, start, end, 15)
+        if pts:
+            t, v = max(pts.items(), key=lambda kv: kv[1])
+            print(f"  {name:14} {format(v, spec):>6} {unit:5} at {hm(t, True)}")
+        else:
+            print(f"  {name:14} no data")
+
+    # Timeline: each row covers [t - step, t]; show its start.
+    temp = single(f"max_over_time(({TEMP})[{w}])", start + step, end, step)
+    fan = single(f"max_over_time(({FAN})[{w}])", start + step, end, step)
+    power = single(f"avg_over_time(({POWER})[{w}])", start + step, end, step)
+    busy = single(BUSY.format(w=w), start + step, end, step)
+    leader = {}
+    for key, pts in series(f"topk(1, {APP_CPU.format(w=w)})", start + step, end, step).items():
+        app = dict(key).get("app", "?")
+        for t, v in pts:
+            leader[t] = (app, v)
+    stamps = sorted(set(temp) | set(busy) | set(leader))
+    print(f"\nTimeline (each {step // 60} min; temp and fan are the max, power and CPU the average)")
+    print(f"  {'from':5}  {'°C':>4} {'rpm':>5} {'W':>5} {'cores':>5}  top app by CPU")
+    for t in stamps[-120:]:
+        app, v = leader.get(t, ("-", None))
+        print(f"  {hm(t - step)}  {fmt(temp.get(t), '4.0f')} {fmt(fan.get(t), '5.0f')} "
+              f"{fmt(power.get(t), '5.1f')} {fmt(busy.get(t), '5.1f')}  {app} {fmt(v, '.2f')}")
+
+    # Whole-window ranking.
+    avg = instant(f"topk({top}, {APP_CPU.format(w=f'{int(span)}s')})", end)
+    peak = instant(f"max_over_time(({APP_CPU.format(w='1m')})[{int(span)}s:30s])", end)
+    mem = instant(f"max_over_time((sum by (app) (cgroup_memory_bytes))[{int(span)}s:30s])", end)
+    print(f"\nTop {top} apps by CPU over the window (cores; peak is the busiest minute)")
+    print(f"  {'avg':>5} {'peak':>5} {'mem peak':>9}  app")
+    for app, v in sorted(avg.items(), key=lambda kv: -kv[1]):
+        print(f"  {v:5.2f} {fmt(peak.get(app), '5.2f')} {size(mem[app]) if app in mem else '-':>9}  {app}")
+
+
+def journal(start, end, max_lines):
+    base = ["journalctl", "--no-pager", "-q", "-o", "short-iso",
+            "--since", f"@{int(start)}", "--until", f"@{int(end)}"]
+
+    def run(args):
+        r = subprocess.run(base + args, capture_output=True, text=True)
+        return [l for l in r.stdout.splitlines() if l.strip()]
+
+    def show(title, lines):
+        # The user manager's messages land in both the system and the user
+        # journal, which a merged read returns twice.
+        lines = list(dict.fromkeys(lines))
+        print(f"\n{title}: {len(lines)} line(s)")
+        # Collapse the same message at different times, keep first-seen order.
+        seen = {}
+        for l in lines:
+            msg = l.split(" ", 1)[1] if " " in l else l
+            if msg in seen:
+                seen[msg][1] += 1
+            else:
+                seen[msg] = [l, 1]
+        for i, (line, n) in enumerate(seen.values()):
+            if i == max_lines:
+                print(f"  ... {len(seen) - max_lines} more distinct (raise --log-lines)")
+                break
+            print(f"  {line[:220]}" + (f"  (x{n})" if n > 1 else ""))
+
+    # Without --user/--system journalctl merges the system journal (readable to
+    # wheel) with this user's own.
+    show("Journal warnings and errors", run(["-p", "warning"]))
+    lifecycle = [l for l in run(["SYSLOG_IDENTIFIER=systemd"])
+                 if re.search(r"\b(Started|Stopped|Starting|Finished|Consumed)\b"
+                              r"|Failed with result|Failed to start", l)]
+    show("Units started or stopped", lifecycle)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--since", default="15m")
+    ap.add_argument("--until", default="now")
+    ap.add_argument("--top", type=int, default=8)
+    ap.add_argument("--log-lines", type=int, default=40)
+    a = ap.parse_args()
+    now = time.time()
+    start, end = when(a.since, now), when(a.until, now)
+    if end <= start:
+        sys.exit("what-happened: --until must be after --since")
+    print(f"what-happened {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start))} -> "
+          f"{hm(end, True)} ({(end - start) / 60:.0f} min)\n")
+    try:
+        metrics_report(start, end, a.top)
+    except (urllib.error.URLError, OSError) as e:
+        print(f"No metrics: {VM} is not answering ({e}).\n"
+              "Start victoria-metrics.service (Switchboard: Metrics) to record them.")
+    except RuntimeError as e:
+        print(f"Metrics query failed: {e}")
+    journal(start, end, a.log_lines)
+
+
+if __name__ == "__main__":
+    main()

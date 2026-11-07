@@ -1,0 +1,57 @@
+[Unit]
+Description=VictoriaMetrics: local metrics history (per-app CPU and memory, thermals, power)
+Documentation=https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/
+ConditionPathExists=/home/linuxbrew/.linuxbrew/bin/victoria-metrics
+# The admin endpoints (delete, snapshot, flags, pprof, ...) need this key; refuse
+# to start rather than serve them to anything that can reach the port.
+ConditionPathExists=%h/.config/victoria-metrics/admin-key
+# The collectors are part of the stack: starting this starts them, and they
+# stop and restart with it (PartOf= in their units). That makes this one unit
+# the whole switch, which is what Switchboard toggles.
+Wants=node-exporter.service cgroup-metrics.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+# Data lives in ~/.local/state/victoria-metrics, which VictoriaMetrics creates.
+# Not StateDirectory=: because ~/.config/victoria-metrics already exists (the
+# scrape config), systemd treats it as the pre-v254 state location and
+# symlinks ~/.local/state/victoria-metrics to it, putting the data in .config.
+# -httpListenAddr: loopback only; VictoriaMetrics has no login.
+# -http.disableCORS: the default answers any Origin with *, so any page in a
+#   browser could read the query API, which lists every app you run.
+# -search.latencyOffset: the default 30s hides the newest points, which is
+#   exactly the window `what-happened` asks about right after a spike.
+# -storage.minFreeDiskSpaceBytes: stop accepting writes before the disk fills.
+ExecStart=/home/linuxbrew/.linuxbrew/bin/victoria-metrics \
+  -storageDataPath=%h/.local/state/victoria-metrics \
+  -retentionPeriod=90d \
+  -storage.minFreeDiskSpaceBytes=10GB \
+  -httpListenAddr=127.0.0.1:8428 \
+  -http.disableCORS \
+  -promscrape.config=%h/.config/victoria-metrics/scrape.yaml \
+  -selfScrapeInterval=60s \
+  -search.latencyOffset=5s \
+  -vmui.customDashboardsPath=%h/.config/victoria-metrics/dashboards \
+  -configAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -deleteAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -flagsAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -forceFlushAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -forceMergeAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -logNewSeriesAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -metricNamesStatsResetAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -pprofAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -reloadAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -search.resetCacheAuthKey=file://%h/.config/victoria-metrics/admin-key \
+  -snapshotAuthKey=file://%h/.config/victoria-metrics/admin-key
+Restart=on-failure
+RestartSec=5s
+# VictoriaMetrics sizes its caches from the cgroup memory limit.
+MemoryMax=512M
+# Telemetry must never be what makes the fan spin.
+CPUWeight=20
+IOWeight=20
+
+[Install]
+WantedBy=default.target

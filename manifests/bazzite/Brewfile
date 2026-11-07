@@ -10,3 +10,9 @@ brew "webkitgtk"
 brew "libayatana-appindicator"
 # Library to render SVG files using Cairo
 brew "librsvg"
+# Local metrics history (victoria-metrics.service and its collectors; see the
+# README). Linux-only here: the collectors read cgroups and hwmon.
+# Cost-effective and scalable monitoring solution and time series database
+brew "victoriametrics"
+# Prometheus exporter for machine metrics
+brew "node_exporter"

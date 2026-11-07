@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Per-app CPU, memory, IO and task counts from cgroup v2, for node_exporter.
+
+A systemd desktop session runs every app in its own cgroup: a Flatpak in
+app-flatpak-<id>-<n>.scope, a desktop launch in app-<id>-<n>.scope, an
+autostart entry in app-<id>@autostart.service, each system service in
+system.slice. Summing CPU per cgroup answers "which app was it?" without
+walking every process, and the kernel already keeps the counters.
+
+Writes a node_exporter textfile every CGROUP_METRICS_INTERVAL seconds (default
+15) to CGROUP_METRICS_OUT (default $XDG_RUNTIME_DIR/node-exporter/cgroup.prom).
+--once writes a single snapshot and exits.
+
+Each cgroup is its own series, labelled with the raw cgroup name (`unit`) and a
+stable `app` name with the per-launch suffix stripped. Query with
+`sum by (app) (rate(cgroup_cpu_usage_seconds_total))`. Summing here instead
+would make a counter drop whenever one instance exits, which rate() reads as a
+reset and turns into a false spike.
+"""
+import os
+import re
+import sys
+import time
+
+ROOT = os.environ.get("CGROUP_ROOT", "/sys/fs/cgroup")
+UID = os.environ.get("CGROUP_METRICS_UID", str(os.getuid()))
+INTERVAL = float(os.environ.get("CGROUP_METRICS_INTERVAL", "15"))
+OUT = os.environ.get("CGROUP_METRICS_OUT") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}"), "node-exporter", "cgroup.prom")
+
+USER = f"user.slice/user-{UID}.slice/user@{UID}.service"
+# (slice label, parent directory); each direct child is one series.
+PARENTS = [
+    ("system", "system.slice"),
+    ("app", f"{USER}/app.slice"),
+    ("session", f"{USER}/session.slice"),
+    ("background", f"{USER}/background.slice"),
+]
+
+METRICS = [
+    ("cgroup_cpu_usage_seconds_total", "counter", "CPU time used by every task in the cgroup."),
+    ("cgroup_memory_bytes", "gauge", "Memory charged to the cgroup (memory.current)."),
+    ("cgroup_memory_swap_bytes", "gauge", "Swap charged to the cgroup (memory.swap.current)."),
+    ("cgroup_io_read_bytes_total", "counter", "Bytes read from block devices."),
+    ("cgroup_io_write_bytes_total", "counter", "Bytes written to block devices."),
+    ("cgroup_tasks", "gauge", "Tasks (threads) in the cgroup (pids.current)."),
+]
+
+
+def unescape(name):
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), name)
+
+
+def app_name(unit):
+    """Stable name for a cgroup: drop launch counters and instance hashes."""
+    name = unescape(unit)
+    name = re.sub(r"\.(scope|service|socket|slice)$", "", name)
+    name = re.sub(r"^dbus-:[0-9.]+-", "", name)              # dbus-:1.3-org.kde.kwalletd6@0
+    name = re.sub(r"@([0-9a-f]{32}|[0-9]+|autostart)$", "", name)  # @<hash>, @0, @autostart
+    name = re.sub(r"-[0-9]+$", "", name)                     # -<launch counter>
+    name = re.sub(r"^app-(flatpak-)?", "", name)             # app-flatpak-com.rtosta.zapzap
+    return name
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def number(path):
+    s = read(path)
+    try:
+        return int(s) if s is not None else None
+    except ValueError:  # "max"
+        return None
+
+
+def sample(cg):
+    vals = {}
+    stat = read(f"{cg}/cpu.stat")
+    if stat:
+        for line in stat.splitlines():
+            k, _, v = line.partition(" ")
+            if k == "usage_usec":
+                vals["cgroup_cpu_usage_seconds_total"] = int(v) / 1e6
+    vals["cgroup_memory_bytes"] = number(f"{cg}/memory.current")
+    vals["cgroup_memory_swap_bytes"] = number(f"{cg}/memory.swap.current")
+    vals["cgroup_tasks"] = number(f"{cg}/pids.current")
+    io = read(f"{cg}/io.stat")
+    if io is not None:
+        rb = wb = 0
+        for line in io.splitlines():
+            for field in line.split()[1:]:
+                k, _, v = field.partition("=")
+                if k == "rbytes":
+                    rb += int(v)
+                elif k == "wbytes":
+                    wb += int(v)
+        vals["cgroup_io_read_bytes_total"] = rb
+        vals["cgroup_io_write_bytes_total"] = wb
+    return vals
+
+
+def label(v):
+    return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def render():
+    rows = {m: [] for m, _, _ in METRICS}
+    for slice_label, parent in PARENTS:
+        base = os.path.join(ROOT, parent)
+        try:
+            children = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for unit in children:
+            cg = os.path.join(base, unit)
+            if not os.path.isdir(cg):
+                continue
+            labels = f'slice="{slice_label}",app="{label(app_name(unit))}",unit="{label(unescape(unit))}"'
+            for metric, value in sample(cg).items():
+                if value is not None:
+                    # str(), not :g -- :g keeps 6 significant digits, so a CPU
+                    # counter past 1e6 s would only move in whole-second steps.
+                    rows[metric].append(f"{metric}{{{labels}}} {value}")
+    out = []
+    for metric, kind, help_ in METRICS:
+        out += [f"# HELP {metric} {help_}", f"# TYPE {metric} {kind}", *rows[metric]]
+    return "\n".join(out) + "\n"
+
+
+def write(text):
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    tmp = f"{OUT}.tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, OUT)  # node_exporter never reads a half-written file
+
+
+def main():
+    if "--once" in sys.argv[1:]:
+        write(render())
+        return
+    while True:
+        started = time.monotonic()
+        write(render())
+        time.sleep(max(1.0, INTERVAL - (time.monotonic() - started)))
+
+
+if __name__ == "__main__":
+    main()

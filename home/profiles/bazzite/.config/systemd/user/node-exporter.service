@@ -1,0 +1,43 @@
+[Unit]
+Description=node_exporter for local metrics (sensors, power, pressure, per-app cgroups)
+Documentation=https://github.com/prometheus/node_exporter
+ConditionPathExists=/home/linuxbrew/.linuxbrew/bin/node_exporter
+# Started by victoria-metrics.service; stops and restarts with it.
+PartOf=victoria-metrics.service
+
+[Service]
+Type=exec
+# cgroup-metrics writes its textfile here. Kept across restarts so a
+# node_exporter restart does not race the writer.
+RuntimeDirectory=node-exporter
+RuntimeDirectoryPreserve=yes
+# `$$` is a literal `$` to systemd, which expands `$` in ExecStart.
+# Only what answers "why is it hot": the defaults add ~1000 series of network
+# protocol and filesystem detail. hwmon carries CPU and GPU temperature, fan
+# RPM and package power; drm the GPU busy percentage. rapl is left out because
+# its energy counters are root-only.
+ExecStart=/home/linuxbrew/.linuxbrew/bin/node_exporter \
+  --web.listen-address=127.0.0.1:9100 \
+  --collector.disable-defaults \
+  --collector.cpu \
+  --collector.cpufreq \
+  --collector.diskstats \
+  --collector.drm \
+  --collector.filesystem \
+  --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|tmp|etc|sysroot|usr|boot)($$|/) \
+  --collector.hwmon \
+  --collector.loadavg \
+  --collector.meminfo \
+  --collector.netdev \
+  --collector.netdev.device-exclude=^(lo|veth.*|podman.*|docker.*|br-.*|virbr.*)$$ \
+  --collector.powersupplyclass \
+  --collector.pressure \
+  --collector.stat \
+  --collector.textfile \
+  --collector.textfile.directory=%t/node-exporter \
+  --collector.thermal_zone \
+  --collector.vmstat
+Restart=on-failure
+RestartSec=5s
+MemoryMax=128M
+CPUWeight=20

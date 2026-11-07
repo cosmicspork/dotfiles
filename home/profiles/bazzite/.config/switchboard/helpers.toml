@@ -1,0 +1,22 @@
+# Switchboard (https://github.com/cosmicspork/switchboard-linux) lists these
+# systemd user units in the tray. Use "Reload config" in its menu after editing.
+# A unit that is not installed on a machine shows as "not found".
+
+[[helper]]
+id = "llama-server"
+name = "llama.cpp"
+unit = "llama-server.service"
+url = "http://127.0.0.1:8080"
+
+[[helper]]
+id = "hoja"
+name = "hoja"
+unit = "hoja.socket"
+url = "http://127.0.0.1:4520"
+
+# Also starts node-exporter.service and cgroup-metrics.service, which stop with it.
+[[helper]]
+id = "victoria-metrics"
+name = "Metrics"
+unit = "victoria-metrics.service"
+url = "http://127.0.0.1:8428/vmui/"
