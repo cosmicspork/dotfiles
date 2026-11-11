@@ -436,8 +436,9 @@ Per-machine setup:
    systemctl --user enable --now k8s-api-tunnel.service
    ```
 3. Point the cluster in kubeconfig at it, keeping certificate verification on
-   the API server's own hostname. Rerun after
-   `doctl kubernetes cluster kubeconfig save`, which resets the server:
+   the API server's own hostname. Rerun it after `doctl kubernetes cluster
+   kubeconfig save`, or after `doctl kubernetes cluster update` without
+   `--update-kubeconfig=false`: both reset the server to the public endpoint.
    ```bash
    kubectl config set-cluster do-ams3-homelab-ams3 \
      --server=https://127.0.0.1:6443 \
