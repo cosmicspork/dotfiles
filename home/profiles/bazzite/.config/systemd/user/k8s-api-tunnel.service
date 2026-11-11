@@ -1,0 +1,22 @@
+[Unit]
+Description=Kubernetes API of the homelab cluster, through its Cloudflare tunnel
+Documentation=https://github.com/cosmicspork/homelab#kubernetes-api
+ConditionPathExists=/home/linuxbrew/.linuxbrew/bin/cloudflared
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+# Listens on loopback only; kubeconfig points the cluster at 127.0.0.1:6443
+# with --tls-server-name set to the API server's real hostname. Each new
+# connection needs a valid Access token from ~/.cloudflared/; when there is
+# none, cloudflared opens a browser for the login and the connection waits.
+ExecStart=/home/linuxbrew/.linuxbrew/bin/cloudflared access tcp \
+  --hostname k8s.0x69.xyz \
+  --url 127.0.0.1:6443
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

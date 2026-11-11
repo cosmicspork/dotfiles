@@ -14,9 +14,21 @@ name = "hoja"
 unit = "hoja.socket"
 url = "http://127.0.0.1:4520"
 
+[[helper]]
+id = "hora"
+name = "hora"
+unit = "hora.socket"
+url = "http://127.0.0.1:4530"
+
 # Also starts node-exporter.service and cgroup-metrics.service, which stop with it.
 [[helper]]
 id = "victoria-metrics"
 name = "Metrics"
 unit = "victoria-metrics.service"
 url = "http://127.0.0.1:8428/vmui/"
+
+# kubectl's path to the homelab cluster; see the homelab README (Kubernetes API).
+[[helper]]
+id = "k8s-api-tunnel"
+name = "Homelab API"
+unit = "k8s-api-tunnel.service"

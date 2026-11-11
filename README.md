@@ -404,3 +404,42 @@ Notes:
   ```bash
   ./tests/test-cgroup-metrics.sh
   ```
+
+## Homelab Kubernetes API on Bazzite
+
+The homelab cluster's control plane firewall admits no outside address, so
+`kubectl` and `flux` reach the API through the cluster's Cloudflare tunnel
+behind Access (see the `homelab` README, "Kubernetes API"). This machine runs
+the local end of it.
+
+Tracked files (bazzite profile):
+
+```text
+.config/systemd/user/k8s-api-tunnel.service   # cloudflared access tcp on 127.0.0.1:6443
+.config/switchboard/helpers.toml              # tray entry "Homelab API"
+```
+
+`cloudflared` comes from `manifests/Brewfile`.
+
+Per-machine setup:
+
+1. Log in to Access once, so the first `kubectl` call doesn't wait on a browser
+   it can't see. Repeat when the Access session expires (`kubectl` then hangs
+   until the login completes):
+   ```bash
+   cloudflared access login https://k8s.0x69.xyz
+   ```
+2. Start the forwarder and keep it on at login, from Switchboard (Homelab API:
+   Start at login, after Reload config) or:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now k8s-api-tunnel.service
+   ```
+3. Point the cluster in kubeconfig at it, keeping certificate verification on
+   the API server's own hostname. Rerun after
+   `doctl kubernetes cluster kubeconfig save`, which resets the server:
+   ```bash
+   kubectl config set-cluster do-ams3-homelab-ams3 \
+     --server=https://127.0.0.1:6443 \
+     --tls-server-name="$(doctl kubernetes cluster get homelab-ams3 --format Endpoint --no-header | sed 's|https://||')"
+   ```
