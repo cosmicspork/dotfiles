@@ -17,6 +17,8 @@ brew "oven-sh/bun/bun"
 brew "php"
 # Dependency Manager for PHP
 brew "composer"
+# Cloudflare Tunnel client (formerly Argo Tunnel)
+brew "cloudflared"
 # Reference implementation for the Development Containers specification
 brew "devcontainer"
 # Load/unload environment variables based on $PWD
