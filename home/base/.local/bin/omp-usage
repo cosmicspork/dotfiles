@@ -1,0 +1,610 @@
+#!/usr/bin/env bun
+// Summarize OMP sessions for usage reporting: agent-active time with operator
+// waits removed, tokens and list-price cost per model, subscription-window
+// readings, the estimated point where a 5-hour window ran out (and how much
+// usage followed it), and what each session produced.
+//
+// Usage: omp-usage [--since 24h|ISO] [--until ISO] [--session ID-PREFIX]...
+//                  [--cwd SUBSTRING] [--json]
+// Overrides: OMP_HOME (default ~/.omp), CODEX_HOME (default ~/.codex).
+
+import { Database } from "bun:sqlite";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
+
+const OMP_HOME = process.env.OMP_HOME ?? join(homedir(), ".omp");
+const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+const SESSIONS_DIR = join(OMP_HOME, "agent", "sessions");
+const AGENT_DB = join(OMP_HOME, "agent", "agent.db");
+
+const OPERATOR_WAIT_TOOL = /^(review_status|approval_status|ask_operator|question_status|report_status|issue_report_status|ask)$|__(review_status|approval_status|ask_operator|question_status)$/;
+const OPERATOR_WAIT_INTENT = /\b(await|awaiting|waiting)\b.*\b(approv\w*|review|decision|publication|operator)\b|\bapproval\b/i;
+const TURN_END = new Set(["stop", "aborted", "error", "length"]);
+const SUBAGENT_GAP_MS = 120_000;
+const LOCKFILES = [":!*.lock", ":!package-lock.json", ":!*.min.js", ":!*.min.css"];
+
+type Interval = [number, number];
+
+interface Call {
+  session: string;
+  file: string;
+  at: number;
+  provider: string;
+  model: string;
+  credentialId: number | null;
+  purpose: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  reasoning: number;
+  total: number;
+  cost: number;
+}
+
+interface SessionFile {
+  label: string;
+  path: string;
+  records: any[];
+}
+
+interface Session {
+  id: string;
+  title: string;
+  cwd: string;
+  path: string;
+  files: SessionFile[];
+}
+
+function parseArgs(argv: string[]) {
+  const opts = { since: Date.now() - 24 * 3600_000, until: Date.now(), sessions: [] as string[], cwd: "", json: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const next = () => {
+      const v = argv[++i];
+      if (v === undefined) die(`${a} needs a value`);
+      return v;
+    };
+    if (a === "--since") opts.since = parseTime(next());
+    else if (a === "--until") opts.until = parseTime(next());
+    else if (a === "--session") opts.sessions.push(next());
+    else if (a === "--cwd") opts.cwd = next();
+    else if (a === "--json") opts.json = true;
+    else if (a === "-h" || a === "--help") {
+      console.log(readFileSync(import.meta.path, "utf8").split("\n").slice(1, 10).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      process.exit(0);
+    } else die(`unknown argument: ${a}`);
+  }
+  return opts;
+}
+
+function die(msg: string): never {
+  console.error(`omp-usage: ${msg}`);
+  process.exit(2);
+}
+
+function parseTime(v: string): number {
+  const rel = v.match(/^(\d+(?:\.\d+)?)([mhd])$/);
+  if (rel) return Date.now() - Number(rel[1]) * { m: 60_000, h: 3600_000, d: 86_400_000 }[rel[2] as "m" | "h" | "d"];
+  const t = Date.parse(v);
+  if (Number.isNaN(t)) die(`cannot parse time: ${v}`);
+  return t;
+}
+
+function readJsonl(path: string): any[] {
+  const out: any[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {}
+  }
+  return out;
+}
+
+function ts(r: any): number | null {
+  return typeof r?.timestamp === "string" ? Date.parse(r.timestamp) : null;
+}
+
+function discoverSessions(since: number, until: number): Session[] {
+  if (!existsSync(SESSIONS_DIR)) die(`no OMP sessions at ${SESSIONS_DIR}`);
+  const sessions: Session[] = [];
+  for (const dir of readdirSync(SESSIONS_DIR)) {
+    const cwdDir = join(SESSIONS_DIR, dir);
+    if (!statSync(cwdDir).isDirectory()) continue;
+    for (const name of readdirSync(cwdDir)) {
+      if (!name.endsWith(".jsonl") || name.startsWith(".")) continue;
+      const path = join(cwdDir, name);
+      const started = Date.parse(name.slice(0, 24).replace(/T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z/, "T$1:$2:$3.$4Z"));
+      if (statSync(path).mtimeMs < since || (!Number.isNaN(started) && started > until)) continue;
+      const parent = readJsonl(path);
+      const header = parent.find((r) => r.type === "session") ?? {};
+      const title = (parent.find((r) => r.type === "title")?.title ?? "").trim();
+      const files: SessionFile[] = [{ label: "parent", path, records: parent }];
+      const subDir = path.slice(0, -".jsonl".length);
+      if (existsSync(subDir)) {
+        for (const sub of readdirSync(subDir).sort()) {
+          if (!sub.endsWith(".jsonl") || sub.startsWith(".") || sub === "changes.jsonl") continue;
+          files.push({ label: sub.slice(0, -".jsonl".length), path: join(subDir, sub), records: readJsonl(join(subDir, sub)) });
+        }
+      }
+      sessions.push({ id: header.id ?? name, title, cwd: header.cwd ?? dir, path, files });
+    }
+  }
+  return sessions.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function collectCalls(s: Session): Call[] {
+  const calls: Call[] = [];
+  for (const f of s.files) {
+    let pinned: number | null = null;
+    for (const r of f.records) {
+      const m = r.message;
+      let usage: any, at: number, provider: string, model: string, cred: number | null, purpose: string;
+      if (r.type === "message" && m?.role === "assistant" && m.usage) {
+        usage = m.usage;
+        at = m.completedAt ?? m.timestamp ?? ts(r);
+        provider = m.provider;
+        model = m.model;
+        cred = m.credentialId ?? null;
+        if (cred !== null) pinned = cred;
+        purpose = "turn";
+      } else if (r.type === "model_usage" && r.usage) {
+        usage = r.usage;
+        at = ts(r)!;
+        provider = r.provider;
+        model = r.model;
+        cred = null;
+        purpose = r.purpose ?? "side";
+      } else continue;
+      calls.push({
+        session: s.id,
+        file: f.label,
+        at,
+        provider,
+        model,
+        credentialId: cred ?? (provider === "openai-codex" ? pinned : null),
+        purpose,
+        input: usage.input ?? 0,
+        output: usage.output ?? 0,
+        cacheRead: usage.cacheRead ?? 0,
+        reasoning: usage.reasoningTokens ?? 0,
+        total: usage.totalTokens ?? 0,
+        cost: usage.cost?.total ?? 0,
+      });
+    }
+  }
+  const sessionCred = calls.find((c) => c.credentialId !== null)?.credentialId ?? null;
+  for (const c of calls) if (c.credentialId === null && c.provider === "openai-codex") c.credentialId = sessionCred;
+  return calls.sort((a, b) => a.at - b.at);
+}
+
+function merge(intervals: Interval[], tolerance = 0): Interval[] {
+  const sorted = intervals.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
+  const out: Interval[] = [];
+  for (const [a, b] of sorted) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1] + tolerance) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+function subtract(from: Interval[], minus: Interval[]): Interval[] {
+  let result = merge(from);
+  for (const [ma, mb] of merge(minus)) {
+    result = result.flatMap(([a, b]): Interval[] => {
+      if (mb <= a || ma >= b) return [[a, b]];
+      const parts: Interval[] = [];
+      if (ma > a) parts.push([a, ma]);
+      if (mb < b) parts.push([mb, b]);
+      return parts;
+    });
+  }
+  return result;
+}
+
+const span = (xs: Interval[]) => xs.reduce((n, [a, b]) => n + (b - a), 0);
+
+interface Timing {
+  openedAt: number;
+  closedAt: number;
+  firstPromptAt: number | null;
+  lastActivityAt: number;
+  activeMs: number;
+  waitingForPromptMs: number;
+  blockedOnOperatorMs: number;
+  operatorWaits: { from: number; to: number; intent: string }[];
+}
+
+function activityIntervals(f: SessionFile): Interval[] {
+  const starts = new Map<string, number>();
+  const out: Interval[] = [];
+  for (const r of f.records) {
+    if (r.type === "custom" && r.customType === "tool_execution_start") starts.set(r.data.toolCallId, Date.parse(r.data.startedAt));
+    const m = r.message;
+    if (r.type === "message" && m?.role === "toolResult" && starts.has(m.toolCallId)) out.push([starts.get(m.toolCallId)!, ts(r)!]);
+    if (r.type === "message" && m?.role === "assistant") {
+      const end = m.completedAt ?? m.timestamp;
+      out.push([end - (m.duration ?? 0), end]);
+    }
+  }
+  return out;
+}
+
+function timing(s: Session): Timing {
+  const parent = s.files[0].records;
+  const stamps = s.files.flatMap((f) => f.records.map(ts)).filter((x): x is number => x !== null);
+  const activityStamps = s.files.flatMap((f) =>
+    f.records
+      .filter((r) => (r.type === "message" && r.message?.role !== "user") || r.customType === "tool_execution_start")
+      .map(ts),
+  ).filter((x): x is number => x !== null);
+  const openedAt = Math.min(...stamps);
+  const closedAt = Math.max(...stamps);
+  const lastActivityAt = Math.max(...activityStamps);
+  const prompts = parent.filter((r) => r.type === "message" && r.message?.role === "user").map((r) => ts(r)!);
+  const firstPromptAt = prompts.length ? Math.min(...prompts) : null;
+  const start = firstPromptAt ?? openedAt;
+
+  const promptGaps: Interval[] = [];
+  let turnEndedAt: number | null = null;
+  for (const r of parent) {
+    const m = r.message;
+    if (r.type === "message" && m?.role === "assistant") {
+      turnEndedAt = TURN_END.has(m.stopReason) ? ts(r) : null;
+    } else if (r.type === "message" && m?.role === "user") {
+      if (turnEndedAt !== null) promptGaps.push([turnEndedAt, ts(r)!]);
+      turnEndedAt = null;
+    } else if (r.type === "custom_message") {
+      turnEndedAt = null;
+    }
+  }
+
+  const starts = new Map<string, { at: number; name: string; intent: string }>();
+  const operatorWaits: Timing["operatorWaits"] = [];
+  for (const r of parent) {
+    if (r.type === "custom" && r.customType === "tool_execution_start") {
+      starts.set(r.data.toolCallId, { at: Date.parse(r.data.startedAt), name: r.data.toolName ?? "", intent: r.data.intent ?? "" });
+    }
+    const m = r.message;
+    if (r.type === "message" && m?.role === "toolResult") {
+      const st = starts.get(m.toolCallId);
+      if (st && (OPERATOR_WAIT_TOOL.test(st.name) || OPERATOR_WAIT_INTENT.test(st.intent))) {
+        operatorWaits.push({ from: st.at, to: ts(r)!, intent: st.intent || st.name });
+      }
+    }
+  }
+  for (const [id, st] of starts) {
+    const finished = parent.some((r) => r.type === "message" && r.message?.toolCallId === id);
+    if (!finished && (OPERATOR_WAIT_TOOL.test(st.name) || OPERATOR_WAIT_INTENT.test(st.intent))) {
+      operatorWaits.push({ from: st.at, to: lastActivityAt, intent: st.intent || st.name });
+    }
+  }
+
+  const subagentWork = merge(s.files.slice(1).flatMap(activityIntervals), SUBAGENT_GAP_MS);
+  const promptIdle = subtract(promptGaps, subagentWork);
+  const operatorIdle = subtract(subtract(operatorWaits.map((w) => [w.from, w.to] as Interval), subagentWork), promptIdle);
+  const window: Interval = [start, lastActivityAt];
+  const clip = (xs: Interval[]) => merge(xs.map(([a, b]) => [Math.max(a, window[0]), Math.min(b, window[1])] as Interval));
+  const waitingForPromptMs = span(clip(promptIdle));
+  const blockedOnOperatorMs = span(clip(operatorIdle));
+  return {
+    openedAt,
+    closedAt,
+    firstPromptAt,
+    lastActivityAt,
+    activeMs: Math.max(0, lastActivityAt - start - waitingForPromptMs - blockedOnOperatorMs),
+    waitingForPromptMs: waitingForPromptMs + (firstPromptAt ? firstPromptAt - openedAt : 0),
+    blockedOnOperatorMs,
+    operatorWaits,
+  };
+}
+
+interface Account {
+  credentialId: number;
+  provider: string;
+  orgId: string | null;
+  label: string;
+}
+
+interface Reading {
+  at: number;
+  limitId: string;
+  window: string;
+  fraction: number;
+  status: string;
+  resetsAt: number;
+}
+
+function loadAccounts(db: Database | null): Map<number, Account> {
+  const out = new Map<number, Account>();
+  if (!db) return out;
+  for (const r of db.query("select id, provider, identity_key from auth_credentials").all() as any[]) {
+    const org = /org:([^|]+)/.exec(r.identity_key ?? "")?.[1] ?? null;
+    const email = /email:([^|]+)/.exec(r.identity_key ?? "")?.[1] ?? "";
+    out.set(r.id, { credentialId: r.id, provider: r.provider, orgId: org, label: `${r.provider} credential ${r.id}${email ? ` (${email.split("@")[1] ?? email})` : ""}` });
+  }
+  return out;
+}
+
+function loadReadings(db: Database | null, orgId: string, since: number, until: number): Reading[] {
+  if (!db) return [];
+  const rows = db
+    .query(
+      `select recorded_at, limit_id, window_label, used_fraction, status, resets_at from usage_history
+       where account_key like ? and recorded_at between ? and ? order by recorded_at`,
+    )
+    .all(`%account:${orgId}%`, since, until) as any[];
+  return rows.map((r) => ({ at: r.recorded_at, limitId: r.limit_id, window: r.window_label, fraction: r.used_fraction, status: r.status, resetsAt: r.resets_at }));
+}
+
+function planType(db: Database | null, orgId: string): string | null {
+  if (!db) return null;
+  const row = db.query("select value from cache where key like ? order by key limit 1").get(`usage_cache:report:%${orgId}%`) as any;
+  try {
+    return JSON.parse(row?.value ?? "null")?.value?.metadata?.planType ?? null;
+  } catch {
+    return null;
+  }
+}
+
+interface Overflow {
+  windowStart: number;
+  windowEnd: number;
+  confirmedFullAt: number;
+  estimatedFullAt: number | null;
+  calibration: { at: number; fraction: number } | null;
+  secondary: Reading[];
+  after: { confirmed: Totals; estimated: Totals | null };
+  servedAfterCap: boolean;
+}
+
+function findOverflows(readings: Reading[], accountCalls: Call[], selectedCalls: Call[]): Overflow[] {
+  const primary = readings.filter((r) => r.limitId.endsWith(":primary"));
+  const secondary = readings.filter((r) => r.limitId.endsWith(":secondary"));
+  const out: Overflow[] = [];
+  for (const resetsAt of new Set(primary.map((r) => r.resetsAt))) {
+    const inWindow = primary.filter((r) => r.resetsAt === resetsAt);
+    const full = inWindow.find((r) => r.fraction >= 1);
+    if (!full) continue;
+    const durationMs = parseWindowMs(full.window) ?? 5 * 3600_000;
+    const windowStart = resetsAt - durationMs;
+    const partial = inWindow.filter((r) => r.fraction > 0 && r.fraction < 1 && r.at < full.at).pop() ?? null;
+    let estimatedFullAt: number | null = null;
+    if (partial) {
+      const used = accountCalls.filter((c) => c.at >= windowStart && c.at <= partial.at).reduce((n, c) => n + c.total, 0);
+      const capacity = used / partial.fraction;
+      let run = 0;
+      for (const c of accountCalls) {
+        if (c.at < windowStart) continue;
+        run += c.total;
+        if (run >= capacity) {
+          estimatedFullAt = Math.min(c.at, full.at);
+          break;
+        }
+      }
+    }
+    const confirmed = totals(selectedCalls.filter((c) => c.at > full.at && c.at <= resetsAt));
+    out.push({
+      windowStart,
+      windowEnd: resetsAt,
+      confirmedFullAt: full.at,
+      estimatedFullAt,
+      calibration: partial ? { at: partial.at, fraction: partial.fraction } : null,
+      secondary: secondary.filter((r) => r.at >= windowStart && r.at <= resetsAt),
+      after: {
+        confirmed,
+        estimated: estimatedFullAt ? totals(selectedCalls.filter((c) => c.at > estimatedFullAt! && c.at <= resetsAt)) : null,
+      },
+      servedAfterCap: confirmed.calls > 0,
+    });
+  }
+  return out;
+}
+
+function parseWindowMs(label: string): number | null {
+  const m = /(\d+)\s*(hour|day)/i.exec(label);
+  return m ? Number(m[1]) * (m[2].toLowerCase() === "hour" ? 3600_000 : 86_400_000) : null;
+}
+
+interface Totals {
+  calls: number;
+  input: number;
+  cacheRead: number;
+  output: number;
+  reasoning: number;
+  total: number;
+  cost: number;
+}
+
+function totals(calls: Call[]): Totals {
+  const t: Totals = { calls: 0, input: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0, cost: 0 };
+  for (const c of calls) {
+    t.calls++;
+    t.input += c.input;
+    t.cacheRead += c.cacheRead;
+    t.output += c.output;
+    t.reasoning += c.reasoning;
+    t.total += c.total;
+    t.cost += c.cost;
+  }
+  return t;
+}
+
+function byModel(calls: Call[]) {
+  const groups = new Map<string, Call[]>();
+  for (const c of calls) {
+    const k = `${c.provider}/${c.model}`;
+    groups.set(k, [...(groups.get(k) ?? []), c]);
+  }
+  return [...groups].map(([model, cs]) => ({ model, ...totals(cs) })).sort((a, b) => b.total - a.total);
+}
+
+interface Output {
+  reviews: string[];
+  filesTouched: number;
+  worktrees: { path: string; repo: string; branch: string; base: string; commits: string[]; stat: string; statWithoutLockfiles: string; dirty: number }[];
+}
+
+function outputs(s: Session, from: number, to: number): Output {
+  const text = s.files.map((f) => readFileSync(f.path, "utf8")).join("\n");
+  const reviews = [...new Set([...text.matchAll(/review_id\W{1,8}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g)].map((m) => m[1]))];
+  const touched = new Set<string>();
+  for (const f of s.files) {
+    for (const r of f.records) {
+      if (r.type === "custom" && r.customType === "tool_execution_start" && /^(write|edit|patch|apply_patch)$/.test(r.data.toolName)) {
+        const p = r.data.args?.path ?? r.data.args?.file_path;
+        if (typeof p === "string") touched.add(p);
+      }
+    }
+  }
+  const candidates = new Set<string>([s.cwd]);
+  for (const m of text.matchAll(/(?:\/private)?\/tmp\/[A-Za-z0-9._-]+/g)) candidates.add(m[0].startsWith("/tmp") ? `/private${m[0]}` : m[0]);
+  const worktrees: Output["worktrees"] = [];
+  for (const path of candidates) {
+    if (!existsSync(join(path, ".git"))) continue;
+    const top = git(path, "rev-parse", "--show-toplevel");
+    if (top !== path) continue;
+    const branch = git(path, "rev-parse", "--abbrev-ref", "HEAD") ?? "?";
+    let best: { base: string; mb: string; count: number; size: number } | null = null;
+    for (const base of ["origin/main", "origin/master"]) {
+      if (git(path, "rev-parse", "-q", "--verify", base) === null) continue;
+      const mb = git(path, "merge-base", "HEAD", base);
+      if (!mb) continue;
+      const count = Number(git(path, "rev-list", "--count", `${mb}..HEAD`) ?? "0");
+      const size = (git(path, "diff", "--numstat", mb, "HEAD") ?? "").split("\n").reduce((n, l) => n + (Number(l.split("\t")[0]) || 0) + (Number(l.split("\t")[1]) || 0), 0);
+      if (!best || count < best.count || (count === best.count && size < best.size)) best = { base, mb, count, size };
+    }
+    if (!best || best.count === 0) continue;
+    const madeHere = (git(path, "log", "--format=%ct %s", `${best.mb}..HEAD`) ?? "")
+      .split("\n")
+      .some((l) => {
+        const at = Number(l.slice(0, l.indexOf(" "))) * 1000;
+        return at >= from && at <= to && text.includes(l.slice(l.indexOf(" ") + 1));
+      });
+    if (!madeHere) continue;
+    worktrees.push({
+      path,
+      repo: (git(path, "remote", "get-url", "origin") ?? "").replace(/^.*[:/]([^/]+\/[^/]+?)(\.git)?$/, "$1"),
+      branch,
+      base: best.base.replace("origin/", ""),
+      commits: (git(path, "log", "--format=%h %s", `${best.mb}..HEAD`) ?? "").split("\n").filter(Boolean),
+      stat: git(path, "diff", "--shortstat", best.mb, "HEAD") ?? "",
+      statWithoutLockfiles: git(path, "diff", "--shortstat", best.mb, "HEAD", "--", ".", ...LOCKFILES) ?? "",
+      dirty: (git(path, "status", "--porcelain") ?? "").split("\n").filter(Boolean).length,
+    });
+  }
+  return { reviews, filesTouched: touched.size, worktrees };
+}
+
+function git(cwd: string, ...args: string[]): string | null {
+  const r = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "ignore" });
+  return r.exitCode === 0 ? r.stdout.toString().trim() : null;
+}
+
+function codexCliActivity(since: number, until: number): number {
+  const dir = join(CODEX_HOME, "sessions");
+  if (!existsSync(dir)) return 0;
+  let n = 0;
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".jsonl")) {
+        const m = statSync(p).mtimeMs;
+        if (m >= since && m <= until + 5 * 3600_000) n++;
+      }
+    }
+  };
+  walk(dir);
+  return n;
+}
+
+const fmtTime = (t: number) => new Date(t).toLocaleString("en-US", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtClock = (t: number) => new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtDur = (ms: number) => `${Math.floor(ms / 3600_000)}h${String(Math.round((ms % 3600_000) / 60_000)).padStart(2, "0")}m`;
+const fmtTok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
+const fmtTotals = (t: Totals) =>
+  `${t.calls} calls, ${fmtTok(t.total)} tokens (${fmtTok(t.input)} uncached input, ${fmtTok(t.cacheRead)} cached input, ${fmtTok(t.output)} output incl. ${fmtTok(t.reasoning)} reasoning), ~$${t.cost.toFixed(2)} list`;
+
+function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const all = discoverSessions(opts.since, opts.until);
+  const selected = all.filter(
+    (s) => (opts.sessions.length === 0 || opts.sessions.some((p) => s.id.startsWith(p))) && (!opts.cwd || s.cwd.includes(opts.cwd)),
+  );
+  if (selected.length === 0) die("no matching sessions; widen --since or check --session/--cwd");
+
+  const db = existsSync(AGENT_DB) ? new Database(AGENT_DB, { readonly: true }) : null;
+  const accounts = loadAccounts(db);
+  const allCalls = all.flatMap(collectCalls);
+
+  const reports = selected.map((s) => {
+    const calls = allCalls.filter((c) => c.session === s.id);
+    const t = timing(s);
+    return { session: s, calls, timing: t, totals: totals(calls), models: byModel(calls), outputs: outputs(s, t.openedAt, t.closedAt) };
+  });
+  const selectedCalls = reports.flatMap((r) => r.calls);
+  const from = Math.min(...reports.map((r) => r.timing.openedAt));
+  const to = Math.max(...reports.map((r) => r.timing.closedAt));
+
+  const accountReports = [...new Set(selectedCalls.map((c) => c.credentialId).filter((x): x is number => x !== null))].map((cred) => {
+    const account = accounts.get(cred);
+    const orgId = account?.orgId ?? null;
+    const sameAccount = (c: Call) => c.credentialId !== null && accounts.get(c.credentialId)?.orgId === orgId;
+    const readings = orgId ? loadReadings(db, orgId, from - 5 * 3600_000, to + 5 * 3600_000) : [];
+    return {
+      account: account ?? { credentialId: cred, provider: "?", orgId, label: `credential ${cred}` },
+      plan: orgId ? planType(db, orgId) : null,
+      readings: readings.filter((r) => r.at >= from - 3600_000 && r.at <= to + 3600_000),
+      overflows: findOverflows(readings, allCalls.filter(sameAccount), selectedCalls.filter(sameAccount)),
+      otherOmpSessions: [...new Set(allCalls.filter((c) => sameAccount(c) && c.at >= from && c.at <= to && !selected.some((s) => s.id === c.session)).map((c) => c.session))],
+    };
+  });
+  const codexFiles = codexCliActivity(from, to);
+
+  if (opts.json) {
+    console.log(JSON.stringify({ reports: reports.map(({ session, calls, ...r }) => ({ id: session.id, title: session.title, cwd: session.cwd, subagents: session.files.slice(1).map((f) => f.label), ...r })), accounts: accountReports, codexCliSessionFiles: codexFiles }, null, 2));
+    return;
+  }
+
+  const lines: string[] = [];
+  for (const r of reports) {
+    const t = r.timing;
+    lines.push(`### ${new Date(t.openedAt).toLocaleDateString("en-CA")}: ${r.session.title.replace(/^[^\p{L}\p{N}]+/u, "") || r.session.id}`);
+    lines.push(`- Session: OMP \`${r.session.id}\` in \`${r.session.cwd}\`${r.session.files.length > 1 ? `, subagents ${r.session.files.slice(1).map((f) => f.label).join(", ")}` : ""}`);
+    lines.push(`- Usage: ${fmtTotals(r.totals)}`);
+    for (const m of r.models) lines.push(`  - ${m.model}: ${m.calls} calls, ${fmtTok(m.total)} tokens, ~$${m.cost.toFixed(2)}`);
+    lines.push(`- Time: ${fmtDur(t.closedAt - t.openedAt)} open (${fmtTime(t.openedAt)} to ${fmtTime(t.closedAt)}), **${fmtDur(t.activeMs)} agent-active**. Removed: ${fmtDur(t.waitingForPromptMs)} waiting for my prompts, ${fmtDur(t.blockedOnOperatorMs)} blocked on operator decisions, ${fmtDur(t.closedAt - t.lastActivityAt)} idle after the last activity.`);
+    for (const w of t.operatorWaits.filter((w) => w.to - w.from >= 60_000)) lines.push(`  - ${fmtClock(w.from)}–${fmtClock(w.to)}: ${w.intent}`);
+    for (const w of r.outputs.worktrees) {
+      lines.push(`- Output: ${w.repo} \`${w.branch}\` vs \`${w.base}\`: ${w.commits.length} commit(s), ${w.stat || "no diff"}; without lockfiles: ${w.statWithoutLockfiles || "no diff"}${w.dirty ? `; ${w.dirty} uncommitted file(s)` : ""}`);
+    }
+    if (r.outputs.reviews.length) lines.push(`- Tracon reviews: ${r.outputs.reviews.map((id) => `\`${id}\``).join(", ")}`);
+    lines.push(`- Files written or edited by the agent: ${r.outputs.filesTouched}`);
+    lines.push("");
+  }
+
+  lines.push("### Subscription windows and overflow");
+  for (const a of accountReports) {
+    lines.push(`- Account: ${a.account.label}${a.plan ? `, plan \`${a.plan}\`` : ""}`);
+    for (const rd of a.readings) lines.push(`  - ${fmtTime(rd.at)} ${rd.window}: ${Math.round(rd.fraction * 100)}% (${rd.status}), resets ${fmtTime(rd.resetsAt)}`);
+    if (a.overflows.length === 0) lines.push("  - No window reached 100% in this period.");
+    for (const o of a.overflows) {
+      const est = o.estimatedFullAt ? `estimated ${fmtClock(o.estimatedFullAt)} (calibrated on ${Math.round(o.calibration!.fraction * 100)}% at ${fmtClock(o.calibration!.at)})` : "no partial reading to calibrate against";
+      lines.push(`  - Window ${fmtTime(o.windowStart)} to ${fmtTime(o.windowEnd)} reached 100%: first seen ${fmtClock(o.confirmedFullAt)}, ${est}.`);
+      lines.push(`  - **After the first 100% reading (likely credits): ${fmtTotals(o.after.confirmed)}**`);
+      if (o.after.estimated) lines.push(`  - After the estimated crossover: ${fmtTotals(o.after.estimated)}`);
+      const sec = o.secondary.map((r) => `${Math.round(r.fraction * 100)}% at ${fmtClock(r.at)}`).join(", ");
+      if (sec) lines.push(`  - Longer window readings: ${sec}. A meter that stops rising after the cap supports overflow going to credits.`);
+      if (o.servedAfterCap) lines.push("  - Requests kept succeeding after the cap. Confirm the credit count in ChatGPT workspace admin → Codex usage.");
+    }
+    if (a.otherOmpSessions.length) lines.push(`  - Other OMP sessions used this account in the same period, so the window also includes them: ${a.otherOmpSessions.join(", ")}`);
+  }
+  if (codexFiles) lines.push(`- Warning: ${codexFiles} Codex CLI session file(s) changed in this period. They share the account's limits but are not counted here.`);
+  lines.push("- Costs are OMP's API list-price estimates, not credits.");
+  console.log(lines.join("\n"));
+}
+
+if (import.meta.main) main();
