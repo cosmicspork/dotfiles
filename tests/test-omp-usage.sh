@@ -37,8 +37,11 @@ assistant() { # timestamp duration_ms stop_reason total_tokens
   printf '{"type":"custom","customType":"tool_execution_start","timestamp":"2026-01-05T10:01:30.000Z","data":{"toolCallId":"t1","toolName":"eval","startedAt":"2026-01-05T10:01:30.000Z","intent":"Waiting for the review decision"}}\n'
   printf '{"type":"message","timestamp":"2026-01-05T10:11:30.000Z","message":{"role":"toolResult","toolCallId":"t1","content":[]}}\n'
   assistant 2026-01-05T10:12:00.000Z 30000 stop 1000
+  printf '{"type":"custom_message","customType":"async-result","timestamp":"2026-01-05T10:15:00.000Z"}\n'
   printf '{"type":"message","timestamp":"2026-01-05T10:20:00.000Z","message":{"role":"user","content":[]}}\n'
   assistant 2026-01-05T10:21:00.000Z 60000 stop 2000
+  printf '{"type":"custom_message","customType":"async-result","timestamp":"2026-01-05T10:25:00.000Z"}\n'
+  assistant 2026-01-05T10:26:00.000Z 60000 stop 0
   printf '{"type":"custom","customType":"date-cwd-reminder","timestamp":"2026-01-05T10:30:00.000Z"}\n'
 } >"$PARENT"
 
@@ -63,10 +66,10 @@ check() { # jq-filter expected description
 }
 
 min=60000
-check '.reports[0].timing.waitingForPromptMs' $((9 * min)) "prompt wait includes time before the first prompt and between turns"
+check '.reports[0].timing.waitingForPromptMs' $((13 * min)) "prompt wait spans notices that start no turn and ends at one that does"
 check '.reports[0].timing.blockedOnOperatorMs' $((8 * min)) "operator wait excludes overlapping subagent work"
-check '.reports[0].timing.activeMs' $((4 * min)) "active time"
-check '.reports[0].timing.lastActivityAt' "$(ms 2026-01-05T10:21:00Z)" "trailing non-activity records are ignored"
+check '.reports[0].timing.activeMs' $((5 * min)) "active time"
+check '.reports[0].timing.lastActivityAt' "$(ms 2026-01-05T10:26:00Z)" "trailing non-activity records are ignored"
 check '.reports[0].totals.total' 4500 "tokens include subagents"
 check '.reports[0].subagents | join(",")' Helper "subagent discovery"
 check '.accounts[0].plan' education "plan type"
@@ -76,6 +79,10 @@ check '.accounts[0].overflows[0].after.estimated.total' 2000 "usage after the es
 
 md=$("$SCRIPT" --since 2026-01-05T09:00:00Z --until 2026-01-05T11:00:00Z)
 grep -q '^### 2026-01-05: Fixture task$' <<<"$md" || fail "markdown heading strips the title icon"
-grep -q '0h04m agent-active' <<<"$md" || fail "markdown active time"
+grep -q '0h05m agent-active' <<<"$md" || fail "markdown active time"
+
+out=$("$SCRIPT" --since 2026-01-05T10:22:00Z --until 2026-01-05T11:00:00Z --json)
+check '.reports[0].totals.calls' 1 "a resumed session reports only calls inside the period"
+check '.reports[0].timing.openedAt' "$(ms 2026-01-05T10:25:00Z)" "a resumed session opens at its first record in the period"
 
 printf 'ok\n'

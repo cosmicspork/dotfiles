@@ -120,15 +120,20 @@ function discoverSessions(since: number, until: number): Session[] {
       const parent = readJsonl(path);
       const header = parent.find((r) => r.type === "session") ?? {};
       const title = (parent.find((r) => r.type === "title")?.title ?? "").trim();
-      const files: SessionFile[] = [{ label: "parent", path, records: parent }];
+      const inPeriod = (r: any) => {
+        const t = ts(r);
+        return t === null || (t >= since && t <= until);
+      };
+      const files: SessionFile[] = [{ label: "parent", path, records: parent.filter(inPeriod) }];
       const subDir = path.slice(0, -".jsonl".length);
       if (existsSync(subDir)) {
         for (const sub of readdirSync(subDir).sort()) {
           if (!sub.endsWith(".jsonl") || sub.startsWith(".") || sub === "changes.jsonl") continue;
-          files.push({ label: sub.slice(0, -".jsonl".length), path: join(subDir, sub), records: readJsonl(join(subDir, sub)) });
+          files.push({ label: sub.slice(0, -".jsonl".length), path: join(subDir, sub), records: readJsonl(join(subDir, sub)).filter(inPeriod) });
         }
       }
-      sessions.push({ id: header.id ?? name, title, cwd: header.cwd ?? dir, path, files });
+      if (files.some((f) => f.records.some((r) => ts(r) !== null)))
+        sessions.push({ id: header.id ?? name, title, cwd: header.cwd ?? dir, path, files });
     }
   }
   return sessions.sort((a, b) => a.path.localeCompare(b.path));
@@ -249,15 +254,18 @@ function timing(s: Session): Timing {
 
   const promptGaps: Interval[] = [];
   let turnEndedAt: number | null = null;
+  let noticeAt: number | null = null;
   for (const r of parent) {
     const m = r.message;
     if (r.type === "message" && m?.role === "assistant") {
+      if (turnEndedAt !== null && noticeAt !== null) promptGaps.push([turnEndedAt, noticeAt]);
       turnEndedAt = TURN_END.has(m.stopReason) ? ts(r) : null;
+      noticeAt = null;
     } else if (r.type === "message" && m?.role === "user") {
       if (turnEndedAt !== null) promptGaps.push([turnEndedAt, ts(r)!]);
-      turnEndedAt = null;
-    } else if (r.type === "custom_message") {
-      turnEndedAt = null;
+      turnEndedAt = noticeAt = null;
+    } else if (r.type === "custom_message" && turnEndedAt !== null) {
+      noticeAt = ts(r);
     }
   }
 

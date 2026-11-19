@@ -463,10 +463,12 @@ omp-usage --since 7d --cwd application-for-admission --json
 How the numbers are derived:
 
 - Tokens and cost come from the session JSONL files under
-  `~/.omp/agent/sessions`. Cost is OMP's API list-price estimate, not credits;
+  `~/.omp/agent/sessions`, counting only records inside `--since`/`--until`,
+  so a resumed session reports just the new work. Cost is OMP's API list-price estimate, not credits;
   the authoritative credit count is in the ChatGPT workspace admin.
 - Agent-active time runs from the first prompt to the last agent activity. It
-  leaves out time waiting for my next prompt, and parent tool calls that block
+  leaves out time waiting for my next prompt (background notices that start
+  no agent turn don't end that wait), and parent tool calls that block
   on an operator decision such as a Tracon review, except where subagents were
   still working.
 - Window readings come from `usage_history` in `~/.omp/agent/agent.db`. The
