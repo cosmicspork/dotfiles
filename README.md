@@ -444,3 +444,42 @@ Per-machine setup:
      --server=https://127.0.0.1:6443 \
      --tls-server-name="$(doctl kubernetes cluster get homelab-ams3 --format Endpoint --no-header | sed 's|https://||')"
    ```
+
+## OMP usage reports
+
+`omp-usage` (base profile, needs Bun) summarizes OMP sessions for reporting AI
+credit use. For each session and its subagents it reports tokens and list-price
+cost per model, agent-active time, and the branches and Tracon reviews it
+produced. For each subscription account it lists the usage-window readings and,
+when a 5-hour window reached 100%, how much usage followed (likely billed to
+workspace credits).
+
+```bash
+omp-usage                                  # sessions active in the last 24h
+omp-usage --since 2026-11-18T20:00-06:00 --session 01a1f1d3 --session 01a1f1d9
+omp-usage --since 7d --cwd application-for-admission --json
+```
+
+How the numbers are derived:
+
+- Tokens and cost come from the session JSONL files under
+  `~/.omp/agent/sessions`, counting only records inside `--since`/`--until`,
+  so a resumed session reports just the new work. Cost is OMP's API list-price estimate, not credits;
+  the authoritative credit count is in the ChatGPT workspace admin.
+- Agent-active time runs from the first prompt to the last agent activity. It
+  leaves out time waiting for my next prompt (background notices that start
+  no agent turn don't end that wait), and parent tool calls that block
+  on an operator decision such as a Tracon review, except where subagents were
+  still working.
+- Window readings come from `usage_history` in `~/.omp/agent/agent.db`. The
+  crossover is estimated by scaling cumulative tokens against the last reading
+  below 100%. Codex CLI sessions share the same limits and are not counted, so
+  the report warns when it sees any.
+- A branch counts as a session's output only when it has a commit made during
+  the session whose subject appears in that session's transcript.
+
+Run the tests after changing it:
+
+```bash
+./tests/test-omp-usage.sh
+```
